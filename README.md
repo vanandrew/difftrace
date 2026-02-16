@@ -1,3 +1,9 @@
+[![CI](https://github.com/vanandrew/difftrace/actions/workflows/ci.yml/badge.svg)](https://github.com/vanandrew/difftrace/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/vanandrew/difftrace/graph/badge.svg?token=OukcZItBZo)](https://codecov.io/gh/vanandrew/difftrace)
+[![PyPI - Version](https://img.shields.io/pypi/v/difftrace?style=flat)](https://pypi.org/project/difftrace/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/difftrace?style=flat)](https://pypi.org/project/difftrace/)
+[![PyPI - License](https://img.shields.io/pypi/l/difftrace?style=flat)](https://pypi.org/project/difftrace/)
+
 # difftrace
 
 Change detection for uv monorepos. Parses `uv.lock` to build the workspace dependency graph, maps `git diff` output to packages, and BFS-traverses reverse dependencies to find all transitively affected packages.
