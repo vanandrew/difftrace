@@ -1,0 +1,58 @@
+name: "difftrace"
+description: "Change detection for uv monorepos — find affected packages from git diff"
+
+inputs:
+  base:
+    description: "Base ref to diff against"
+    required: false
+    default: "origin/main"
+  lock-file:
+    description: "Path to uv.lock file"
+    required: false
+    default: "uv.lock"
+
+outputs:
+  affected:
+    description: "JSON array of affected package names"
+    value: ${{ steps.difftrace.outputs.affected }}
+  matrix:
+    description: 'JSON object for strategy.matrix (e.g. {"package": [...]})'
+    value: ${{ steps.difftrace.outputs.matrix }}
+  has_affected:
+    description: '"true" if any packages are affected, "false" otherwise'
+    value: ${{ steps.difftrace.outputs.has_affected }}
+  test_all:
+    description: '"true" if root config changed and all packages should be tested'
+    value: ${{ steps.difftrace.outputs.test_all }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install difftrace
+      shell: bash
+      run: pip install "${{ github.action_path }}"
+
+    - name: Run difftrace
+      id: difftrace
+      shell: bash
+      run: |
+        result=$(difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" --json)
+        affected=$(echo "$result" | python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
+        test_all=$(echo "$result" | python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
+        matrix=$(echo "$result" | python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")
+
+        if [ "$affected" = "[]" ]; then
+          has_affected="false"
+        else
+          has_affected="true"
+        fi
+
+        echo "affected=$affected" >> "$GITHUB_OUTPUT"
+        echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+        echo "has_affected=$has_affected" >> "$GITHUB_OUTPUT"
+        echo "test_all=$test_all" >> "$GITHUB_OUTPUT"
