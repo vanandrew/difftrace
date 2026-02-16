@@ -10,6 +10,10 @@ inputs:
     description: "Path to uv.lock file"
     required: false
     default: "uv.lock"
+  exclude-packages:
+    description: "Comma-separated list of packages to exclude from the affected set"
+    required: false
+    default: ""
 
 outputs:
   affected:
@@ -37,11 +41,33 @@ runs:
       shell: bash
       run: pip install "${{ github.action_path }}"
 
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ ! -f "${{ inputs.lock-file }}" ]; then
+          echo "::error::Lock file not found: ${{ inputs.lock-file }}"
+          exit 1
+        fi
+        if ! git rev-parse --verify "${{ inputs.base }}" >/dev/null 2>&1; then
+          echo "::warning::Base ref '${{ inputs.base }}' cannot be resolved — difftrace may fail. Try 'git fetch' or checkout with fetch-depth: 0."
+        fi
+
     - name: Run difftrace
       id: difftrace
       shell: bash
       run: |
-        result=$(difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" --json)
+        set -euo pipefail
+        EXCLUDE_FLAGS=""
+        if [ -n "${{ inputs.exclude-packages }}" ]; then
+          IFS=',' read -ra PKGS <<< "${{ inputs.exclude-packages }}"
+          for pkg in "${PKGS[@]}"; do
+            pkg=$(echo "$pkg" | xargs)
+            if [ -n "$pkg" ]; then
+              EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $pkg"
+            fi
+          done
+        fi
+        result=$(difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $EXCLUDE_FLAGS --json)
         affected=$(echo "$result" | python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
         test_all=$(echo "$result" | python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
         matrix=$(echo "$result" | python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")

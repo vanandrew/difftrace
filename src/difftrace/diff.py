@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import fnmatch
+import logging
 import subprocess
 from pathlib import Path
 
 from difftrace.graph import WorkspacePackage
+
+logger = logging.getLogger(__name__)
 
 # Default files/dirs at the workspace root that trigger testing all packages.
 DEFAULT_ROOT_TRIGGERS = {"pyproject.toml", "uv.lock"}
@@ -12,14 +16,19 @@ DEFAULT_DIR_TRIGGERS = {".github/"}
 
 def get_git_root(cwd: Path | None = None) -> Path:
     """Get the git repository root directory."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("git command timed out after 30 seconds")
     if result.returncode != 0:
         raise ValueError("Not a git repository. Run difftrace from within a git repo.")
+    logger.debug("Git root: %s", result.stdout.strip())
     return Path(result.stdout.strip())
 
 
@@ -28,22 +37,35 @@ def get_changed_files(base_ref: str, repo_root: Path | None = None) -> list[str]
 
     Returns paths relative to the git root.
     """
-    result = subprocess.run(
-        ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
-        capture_output=True,
-        text=True,
-        cwd=repo_root,
-    )
+    if not base_ref or not base_ref.strip():
+        raise ValueError("base_ref must not be empty")
+    if "\x00" in base_ref:
+        raise ValueError("base_ref must not contain null bytes")
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("git command timed out after 30 seconds")
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if "unknown revision" in stderr or "not a git repository" in stderr:
-            raise ValueError(
+            msg = (
                 f"Could not resolve ref '{base_ref}'. "
                 "Does the branch/ref exist? "
                 "Try 'git fetch' or use --base with a valid ref."
             )
+            if "unknown revision" in stderr:
+                msg += "\nIf running in CI, ensure you checkout with fetch-depth: 0."
+            raise ValueError(msg)
         raise RuntimeError(f"git diff failed: {stderr}")
-    return [f for f in result.stdout.strip().splitlines() if f]
+    files = [f for f in result.stdout.strip().splitlines() if f]
+    logger.debug("Changed files (%d): %s", len(files), files)
+    return files
 
 
 def relativize_to_workspace(
@@ -109,9 +131,16 @@ def map_files_to_packages(
         reverse=True,
     )
 
+    glob_triggers = {t for t in root_triggers if any(c in t for c in "*?[")}
+    exact_triggers = root_triggers - glob_triggers
+
     for filepath in changed_files:
-        # Check root triggers
-        if filepath in root_triggers:
+        # Check root triggers (exact match then glob)
+        if filepath in exact_triggers:
+            test_all = True
+            continue
+
+        if glob_triggers and any(fnmatch.fnmatch(filepath, t) for t in glob_triggers):
             test_all = True
             continue
 

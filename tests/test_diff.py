@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +29,12 @@ class TestGetGitRoot:
         with pytest.raises(ValueError, match="Not a git repository"):
             get_git_root()
 
+    @patch("difftrace.diff.subprocess.run")
+    def test_git_root_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=30)
+        with pytest.raises(RuntimeError, match="timed out after 30 seconds"):
+            get_git_root()
+
 
 class TestGetChangedFiles:
     @patch("difftrace.diff.subprocess.run")
@@ -52,6 +59,27 @@ class TestGetChangedFiles:
         mock_run.return_value.stderr = "fatal: unknown revision 'nope'"
         with pytest.raises(ValueError, match="Could not resolve ref"):
             get_changed_files("nope")
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_bad_ref_includes_fetch_depth_hint(self, mock_run):
+        mock_run.return_value.returncode = 128
+        mock_run.return_value.stderr = "fatal: unknown revision 'origin/main'"
+        with pytest.raises(ValueError, match="fetch-depth: 0"):
+            get_changed_files("origin/main")
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_changed_files_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=30)
+        with pytest.raises(RuntimeError, match="timed out after 30 seconds"):
+            get_changed_files("origin/main")
+
+    def test_invalid_base_ref_empty(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            get_changed_files("")
+
+    def test_invalid_base_ref_null_byte(self):
+        with pytest.raises(ValueError, match="must not contain null bytes"):
+            get_changed_files("origin/main\x00exploit")
 
 
 class TestRelativizeToWorkspace:
@@ -179,10 +207,55 @@ class TestMapFilesToPackages:
     def test_custom_triggers_override_defaults(self):
         """When custom triggers are passed, defaults are not used."""
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _, test_all = map_files_to_packages(
             ["pyproject.toml"],
             packages,
             root_triggers=set(),
             dir_triggers=set(),
         )
+        assert test_all is False
+
+    def test_glob_root_trigger(self):
+        """Glob pattern 'Dockerfile.*' matches 'Dockerfile.prod'."""
+        packages = self._make_packages()
+        _, test_all = map_files_to_packages(
+            ["Dockerfile.prod"],
+            packages,
+            root_triggers={"Dockerfile.*"},
+            dir_triggers=set(),
+        )
+        assert test_all is True
+
+    def test_glob_no_false_match(self):
+        """Glob pattern 'Dockerfile.*' should not match 'README.md'."""
+        packages = self._make_packages()
+        _, test_all = map_files_to_packages(
+            ["README.md"],
+            packages,
+            root_triggers={"Dockerfile.*"},
+            dir_triggers=set(),
+        )
+        assert test_all is False
+
+    def test_glob_question_mark(self):
+        """Glob pattern 'config.?' matches 'config.a'."""
+        packages = self._make_packages()
+        _, test_all = map_files_to_packages(
+            ["config.a"],
+            packages,
+            root_triggers={"config.?"},
+            dir_triggers=set(),
+        )
+        assert test_all is True
+
+    def test_unicode_file_path(self):
+        """Non-ASCII file paths are matched correctly."""
+        packages = {
+            "api": WorkspacePackage(name="api", source_path="packages/api"),
+        }
+        changed, test_all = map_files_to_packages(
+            ["packages/api/données/fichier.py"],
+            packages,
+        )
+        assert changed == {"api"}
         assert test_all is False

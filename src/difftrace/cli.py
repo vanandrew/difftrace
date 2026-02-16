@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,6 +18,8 @@ from difftrace.diff import (
 )
 from difftrace.graph import parse_lock_file
 from difftrace.traverse import find_affected_packages
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,6 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Built-in triggers: pyproject.toml, uv.lock, .github/"
         ),
     )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        metavar="PACKAGE",
+        help="Exclude a package from the affected set (repeatable)",
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose/debug logging to stderr",
+    )
     return parser
 
 
@@ -132,6 +148,8 @@ def run(args: argparse.Namespace) -> dict:
         name for name, pkg in graph.packages.items() if pkg.source_path == "."
     }
 
+    exclude_set = set(args.exclude or [])
+
     if args.direct_only:
         affected = directly_changed - virtual_roots
     elif test_all:
@@ -140,6 +158,9 @@ def run(args: argparse.Namespace) -> dict:
         affected = (
             find_affected_packages(directly_changed, graph.reverse) - virtual_roots
         )
+
+    directly_changed -= exclude_set
+    affected -= exclude_set
 
     # Build file-to-package mapping for --detailed
     file_mapping: dict[str, str | None] = {}
@@ -173,9 +194,22 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        stream=sys.stderr,
+        format="%(name)s: %(message)s",
+    )
+
     try:
         result = run(args)
-    except (FileNotFoundError, ValueError, RuntimeError) as e:
+    except (
+        FileNotFoundError,
+        ValueError,
+        RuntimeError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+    ) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

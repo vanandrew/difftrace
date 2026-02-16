@@ -47,3 +47,21 @@ class TestFindAffectedPackages:
         reverse = {"a": {"b"}, "b": {"a"}}
         result = find_affected_packages({"a"}, reverse)
         assert result == {"a", "b"}
+
+    def test_three_node_cycle(self):
+        """A→B→C→A terminates correctly."""
+        reverse = {"a": {"b"}, "b": {"c"}, "c": {"a"}}
+        result = find_affected_packages({"a"}, reverse)
+        assert result == {"a", "b", "c"}
+
+    def test_large_cycle(self):
+        """5-node cycle terminates correctly."""
+        reverse = {
+            "a": {"b"},
+            "b": {"c"},
+            "c": {"d"},
+            "d": {"e"},
+            "e": {"a"},
+        }
+        result = find_affected_packages({"a"}, reverse)
+        assert result == {"a", "b", "c", "d", "e"}

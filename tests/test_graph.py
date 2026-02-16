@@ -1,3 +1,6 @@
+import logging
+import sys
+
 import pytest
 
 from difftrace.graph import parse_lock_file
@@ -83,11 +86,80 @@ class TestParseLockFile:
         with pytest.raises(ValueError, match="no workspace members"):
             parse_lock_file(lock_file)
 
-    def test_unknown_lock_version_warns(self, tmp_path, capsys):
+    def test_malformed_toml(self, tmp_path):
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text("this is not [valid toml >>>")
+        with pytest.raises(ValueError, match="not valid TOML"):
+            parse_lock_file(lock_file)
+
+    def test_members_not_a_list(self, tmp_path):
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text('version = 1\n\n[manifest]\nmembers = "bad"\n')
+        with pytest.raises(ValueError, match="members must be a list"):
+            parse_lock_file(lock_file)
+
+    def test_unknown_lock_version_warns(self, tmp_path, caplog):
         lock_file = tmp_path / "uv.lock"
         lock_file.write_text("version = 99\n\n[manifest]\nmembers = []\n")
-        with pytest.raises(ValueError):
+        with caplog.at_level(logging.WARNING, logger="difftrace.graph"):
+            with pytest.raises(ValueError):
+                parse_lock_file(lock_file)
+        assert "version 99" in caplog.text
+        assert "not recognized" in caplog.text
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod not reliable on Windows")
+    def test_permission_denied(self, tmp_path):
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text("version = 1\n")
+        lock_file.chmod(0o000)
+        try:
+            with pytest.raises(RuntimeError, match="Cannot read"):
+                parse_lock_file(lock_file)
+        finally:
+            lock_file.chmod(0o644)
+
+    def test_source_path_trailing_slash_normalized(self, tmp_path):
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text(
+            'version = 1\n\n[manifest]\nmembers = ["api"]\n\n'
+            "[[package]]\n"
+            'name = "api"\nversion = "0.1.0"\n'
+            'source = { editable = "packages/api/" }\n'
+            "dependencies = []\n"
+        )
+        graph = parse_lock_file(lock_file)
+        assert graph.packages["api"].source_path == "packages/api"
+
+    def test_duplicate_members_warns(self, tmp_path, caplog):
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text(
+            'version = 1\n\n[manifest]\nmembers = ["api", "api", "shared"]\n\n'
+            "[[package]]\n"
+            'name = "api"\nversion = "0.1.0"\n'
+            'source = { editable = "packages/api" }\n'
+            "dependencies = []\n\n"
+            "[[package]]\n"
+            'name = "shared"\nversion = "0.1.0"\n'
+            'source = { editable = "packages/shared" }\n'
+            "dependencies = []\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="difftrace.graph"):
             parse_lock_file(lock_file)
-        stderr = capsys.readouterr().err
-        assert "version 99" in stderr
-        assert "not recognized" in stderr
+        assert "Duplicate members" in caplog.text
+
+    def test_no_source_path_warns(self, tmp_path, caplog):
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text(
+            'version = 1\n\n[manifest]\nmembers = ["api", "nosource"]\n\n'
+            "[[package]]\n"
+            'name = "api"\nversion = "0.1.0"\n'
+            'source = { editable = "packages/api" }\n'
+            "dependencies = []\n\n"
+            "[[package]]\n"
+            'name = "nosource"\nversion = "0.1.0"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'
+            "dependencies = []\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="difftrace.graph"):
+            parse_lock_file(lock_file)
+        assert "no recognized source path" in caplog.text

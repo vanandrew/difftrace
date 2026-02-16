@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import sys
+import logging
 import tomllib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_LOCK_VERSIONS = {1}
 
@@ -63,15 +65,22 @@ def parse_lock_file(
         FileNotFoundError: If the lock file doesn't exist.
         ValueError: If the lock file has no [manifest] section (not a workspace).
     """
-    data = tomllib.loads(lock_path.read_text())
+    try:
+        data = tomllib.loads(lock_path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{lock_path} is not valid TOML: {exc}") from exc
+    except FileNotFoundError:
+        raise
+    except (PermissionError, OSError) as exc:
+        raise RuntimeError(f"Cannot read {lock_path}: {exc}") from exc
 
     lock_version = data.get("version")
     if lock_version not in SUPPORTED_LOCK_VERSIONS:
-        print(
-            f"Warning: uv.lock version {lock_version} is not "
-            f"recognized (supported: {SUPPORTED_LOCK_VERSIONS}). "
+        logger.warning(
+            "uv.lock version %s is not recognized (supported: %s). "
             "Results may be unreliable.",
-            file=sys.stderr,
+            lock_version,
+            SUPPORTED_LOCK_VERSIONS,
         )
 
     manifest = data.get("manifest")
@@ -80,7 +89,19 @@ def parse_lock_file(
             f"{lock_path} has no [manifest] section — is this a uv workspace?"
         )
 
-    members = set(manifest.get("members", []))
+    raw_members = manifest.get("members", [])
+    if not isinstance(raw_members, list):
+        member_type = type(raw_members).__name__
+        raise ValueError(
+            f"{lock_path} [manifest] members must be a list, got {member_type}"
+        )
+    members = set(raw_members)
+    if len(raw_members) != len(members):
+        logger.warning(
+            "Duplicate members in %s: %s",
+            lock_path,
+            [m for m in raw_members if raw_members.count(m) > 1],
+        )
     if not members:
         raise ValueError(f"{lock_path} has no workspace members in [manifest]")
 
@@ -94,7 +115,9 @@ def parse_lock_file(
         source = pkg_data.get("source", {})
         source_path = _get_source_path(source)
         if source_path is None:
+            logger.warning("Package %r has no recognized source path — skipping", name)
             continue
+        source_path = source_path.rstrip("/")
 
         raw_deps = pkg_data.get("dependencies", [])
         deps = _extract_dep_names(raw_deps, members)
@@ -140,4 +163,5 @@ def parse_lock_file(
         for dep in deps:
             graph.reverse[dep].add(name)
 
+    logger.debug("Parsed %d workspace members from %s", len(graph.packages), lock_path)
     return graph
