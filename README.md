@@ -19,7 +19,7 @@ packages/shared/lib.py changed
         │
         ▼
    ┌─────────┐
-   │  shared  │  ← directly changed
+   │ shared  │  ← directly changed
    └─────────┘
     ▲        ▲
     │        │
@@ -230,6 +230,11 @@ The `matrix.package` output works with any per-package step — tests, builds, l
 | `base` | `origin/main` | Base ref to diff against |
 | `lock-file` | `uv.lock` | Path to uv lock file |
 | `exclude-packages` | — | Comma-separated list of packages to exclude |
+| `no-dev` | `false` | Exclude dev dependencies from the dependency graph |
+| `no-optional` | `false` | Exclude optional dependencies from the dependency graph |
+| `direct-only` | `false` | Only output directly changed packages, skip transitive dependents |
+| `root-triggers` | — | Comma-separated list of additional trigger patterns (e.g. `Dockerfile,docker/`) |
+| `verbose` | `false` | Enable debug logging to stderr |
 
 ### Action Outputs
 

@@ -14,6 +14,26 @@ inputs:
     description: "Comma-separated list of packages to exclude from the affected set"
     required: false
     default: ""
+  no-dev:
+    description: "Exclude dev dependencies from the dependency graph"
+    required: false
+    default: "false"
+  no-optional:
+    description: "Exclude optional dependencies from the dependency graph"
+    required: false
+    default: "false"
+  direct-only:
+    description: "Only output directly changed packages, skip transitive dependents"
+    required: false
+    default: "false"
+  root-triggers:
+    description: "Comma-separated list of additional file/dir patterns that trigger test_all (e.g. 'Dockerfile,docker/'). Append / for directory prefixes."
+    required: false
+    default: ""
+  verbose:
+    description: "Enable debug logging to stderr"
+    required: false
+    default: "false"
 
 outputs:
   affected:
@@ -61,17 +81,38 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        EXCLUDE_FLAGS=""
+        FLAGS=""
         if [ -n "${{ inputs.exclude-packages }}" ]; then
           IFS=',' read -ra PKGS <<< "${{ inputs.exclude-packages }}"
           for pkg in "${PKGS[@]}"; do
             pkg=$(echo "$pkg" | xargs)
             if [ -n "$pkg" ]; then
-              EXCLUDE_FLAGS="$EXCLUDE_FLAGS --exclude $pkg"
+              FLAGS="$FLAGS --exclude $pkg"
             fi
           done
         fi
-        result=$(difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $EXCLUDE_FLAGS --json)
+        if [ "${{ inputs.no-dev }}" = "true" ]; then
+          FLAGS="$FLAGS --no-dev"
+        fi
+        if [ "${{ inputs.no-optional }}" = "true" ]; then
+          FLAGS="$FLAGS --no-optional"
+        fi
+        if [ "${{ inputs.direct-only }}" = "true" ]; then
+          FLAGS="$FLAGS --direct-only"
+        fi
+        if [ -n "${{ inputs.root-triggers }}" ]; then
+          IFS=',' read -ra TRIGGERS <<< "${{ inputs.root-triggers }}"
+          for trigger in "${TRIGGERS[@]}"; do
+            trigger=$(echo "$trigger" | xargs)
+            if [ -n "$trigger" ]; then
+              FLAGS="$FLAGS --root-trigger $trigger"
+            fi
+          done
+        fi
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          FLAGS="$FLAGS --verbose"
+        fi
+        result=$(difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
         affected=$(echo "$result" | python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
         test_all=$(echo "$result" | python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
         matrix=$(echo "$result" | python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")
