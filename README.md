@@ -10,7 +10,6 @@ Change detection for [uv](https://docs.astral.sh/uv/) monorepos. Parses `uv.lock
 
 **Zero runtime dependencies** — stdlib only. Python 3.11+.
 
-
 ## Why?
 
 In a monorepo with many packages, running every pipeline on every PR is slow and wasteful. difftrace figures out *which* packages are actually affected by a change — both directly (files changed inside the package) and transitively (a dependency of that package changed) — so your CI only builds, tests, lints, and deploys what matters.
@@ -29,6 +28,92 @@ packages/shared/lib.py changed
 └──────┘ └────────┘
 ```
 
+## GitHub Action
+
+difftrace ships as a composite GitHub Action so you can use it directly in your workflows. It handles Python setup, installation, and output parsing for you.
+
+```yaml
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.diff.outputs.matrix }}
+      has_affected: ${{ steps.diff.outputs.has_affected }}
+      test_all: ${{ steps.diff.outputs.test_all }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # required so git diff can see the full history
+      - uses: vanandrew/difftrace@v1
+        id: diff
+        with:
+          base: origin/main
+
+  test:
+    needs: detect
+    if: needs.detect.outputs.has_affected == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run pytest
+        run: uv run --directory packages/${{ matrix.package }} pytest
+
+  build:
+    needs: [detect, test]
+    if: needs.detect.outputs.has_affected == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: |
+          docker build \
+            -f packages/${{ matrix.package }}/Dockerfile \
+            -t ${{ matrix.package }}:${{ github.sha }} .
+
+  deploy:
+    needs: [detect, build]
+    if: github.ref == 'refs/heads/main' && needs.detect.outputs.has_affected == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy ${{ matrix.package }}
+        run: echo "Deploying ${{ matrix.package }}"
+```
+
+The `matrix.package` output works with any per-package step — tests, builds, linting, deploys, etc. The example above shows a typical pipeline where each stage gates the next: **detect** → **test** → **build** → **deploy**. The `build` job only runs for packages that pass tests, and `deploy` only runs on the `main` branch.
+
+> **Note:** `fetch-depth: 0` is required on the checkout step so that `git diff` can compare against the base ref. Without it, the shallow clone won't have enough history and difftrace will fail.
+
+### Action Inputs
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `base` | `origin/main` | Base ref to diff against |
+| `lock-file` | `uv.lock` | Path to uv lock file |
+| `exclude-packages` | — | Comma-separated list of packages to exclude |
+| `no-dev` | `false` | Exclude dev dependencies from the dependency graph |
+| `no-optional` | `false` | Exclude optional dependencies from the dependency graph |
+| `direct-only` | `false` | Only output directly changed packages, skip transitive dependents |
+| `root-triggers` | — | Comma-separated list of additional trigger patterns (e.g. `Dockerfile,docker/`) |
+| `verbose` | `false` | Enable debug logging to stderr |
+
+### Action Outputs
+
+| Output | Description |
+|--------|-------------|
+| `affected` | JSON array of affected package names |
+| `matrix` | `{"package": [...]}` for `strategy.matrix` |
+| `has_affected` | `"true"` or `"false"` |
+| `test_all` | `"true"` if root config changed |
+
 ## Installation
 
 ```bash
@@ -40,24 +125,6 @@ Or with uv:
 ```bash
 uv add difftrace --dev
 ```
-
-## How It Works
-
-1. **Parse** `uv.lock` to extract workspace members and their inter-package dependencies (external packages are excluded)
-2. **Diff** `git diff --name-only base...HEAD` to get changed files
-3. **Map** changed files to packages via longest source-path prefix matching
-4. **Traverse** the reverse dependency graph (BFS) to find all transitively affected packages
-
-### Root Triggers
-
-Certain files at the root of your workspace indicate a change that affects *all* packages. By default, changes to `pyproject.toml`, `uv.lock`, or anything under `.github/` will set `test_all: true`. You can add custom triggers with `--root-trigger`.
-
-### Edge Cases
-
-- **Nested workspaces** — workspace root != git root? Paths are normalized automatically
-- **Virtual root packages** — skipped during file matching to avoid false positives (a virtual root at `.` would otherwise match every file)
-- **Cycles** — BFS uses a visited set to prevent infinite loops
-- **Longest prefix matching** — `packages/api-extra/foo.py` won't incorrectly match `packages/api`
 
 ## CLI Usage
 
@@ -160,91 +227,23 @@ packages/worker
 
 > `--json`, `--names`, and `--paths` are mutually exclusive. If none are specified, human-readable output is used.
 
-## GitHub Action
+## How It Works
 
-difftrace ships as a composite GitHub Action so you can use it directly in your workflows. It handles Python setup, installation, and output parsing for you.
+1. **Parse** `uv.lock` to extract workspace members and their inter-package dependencies (external packages are excluded)
+2. **Diff** `git diff --name-only base...HEAD` to get changed files
+3. **Map** changed files to packages via longest source-path prefix matching
+4. **Traverse** the reverse dependency graph (BFS) to find all transitively affected packages
 
-```yaml
-jobs:
-  detect:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.diff.outputs.matrix }}
-      has_affected: ${{ steps.diff.outputs.has_affected }}
-      test_all: ${{ steps.diff.outputs.test_all }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # required so git diff can see the full history
-      - uses: vanandrew/difftrace@v1
-        id: diff
-        with:
-          base: origin/main
+### Root Triggers
 
-  test:
-    needs: detect
-    if: needs.detect.outputs.has_affected == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - name: Run pytest
-        run: uv run --directory packages/${{ matrix.package }} pytest
+Certain files at the root of your workspace indicate a change that affects *all* packages. By default, changes to `pyproject.toml`, `uv.lock`, or anything under `.github/` will set `test_all: true`. You can add custom triggers with `--root-trigger`.
 
-  build:
-    needs: [detect, test]
-    if: needs.detect.outputs.has_affected == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build image
-        run: |
-          docker build \
-            -f packages/${{ matrix.package }}/Dockerfile \
-            -t ${{ matrix.package }}:${{ github.sha }} .
+### Edge Cases
 
-  deploy:
-    needs: [detect, build]
-    if: github.ref == 'refs/heads/main' && needs.detect.outputs.has_affected == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Deploy ${{ matrix.package }}
-        run: echo "Deploying ${{ matrix.package }}"
-```
-
-The `matrix.package` output works with any per-package step — tests, builds, linting, deploys, etc. The example above shows a typical pipeline where each stage gates the next: **detect** → **test** → **build** → **deploy**. The `build` job only runs for packages that pass tests, and `deploy` only runs on the `main` branch.
-
-> **Note:** `fetch-depth: 0` is required on the checkout step so that `git diff` can compare against the base ref. Without it, the shallow clone won't have enough history and difftrace will fail.
-
-### Action Inputs
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `base` | `origin/main` | Base ref to diff against |
-| `lock-file` | `uv.lock` | Path to uv lock file |
-| `exclude-packages` | — | Comma-separated list of packages to exclude |
-| `no-dev` | `false` | Exclude dev dependencies from the dependency graph |
-| `no-optional` | `false` | Exclude optional dependencies from the dependency graph |
-| `direct-only` | `false` | Only output directly changed packages, skip transitive dependents |
-| `root-triggers` | — | Comma-separated list of additional trigger patterns (e.g. `Dockerfile,docker/`) |
-| `verbose` | `false` | Enable debug logging to stderr |
-
-### Action Outputs
-
-| Output | Description |
-|--------|-------------|
-| `affected` | JSON array of affected package names |
-| `matrix` | `{"package": [...]}` for `strategy.matrix` |
-| `has_affected` | `"true"` or `"false"` |
-| `test_all` | `"true"` if root config changed |
+- **Nested workspaces** — workspace root != git root? Paths are normalized automatically
+- **Virtual root packages** — skipped during file matching to avoid false positives (a virtual root at `.` would otherwise match every file)
+- **Cycles** — BFS uses a visited set to prevent infinite loops
+- **Longest prefix matching** — `packages/api-extra/foo.py` won't incorrectly match `packages/api`
 
 ### Compatibility
 
