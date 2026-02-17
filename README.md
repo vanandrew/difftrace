@@ -10,6 +10,7 @@ Change detection for [uv](https://docs.astral.sh/uv/) monorepos. Parses `uv.lock
 
 **Zero runtime dependencies** — stdlib only. Python 3.11+.
 
+
 ## Why?
 
 In a monorepo with many packages, running every pipeline on every PR is slow and wasteful. difftrace figures out *which* packages are actually affected by a change — both directly (files changed inside the package) and transitively (a dependency of that package changed) — so your CI only builds, tests, lints, and deploys what matters.
@@ -244,6 +245,15 @@ The `matrix.package` output works with any per-package step — tests, builds, l
 | `matrix` | `{"package": [...]}` for `strategy.matrix` |
 | `has_affected` | `"true"` or `"false"` |
 | `test_all` | `"true"` if root config changed |
+
+### Compatibility
+
+| Component | Supported |
+|-----------|-----------|
+| Python | 3.11+ |
+| uv lock format | version 1 (uv 0.4.x – latest) |
+
+CI tests run against uv 0.4.30, 0.6.14, and the latest release.
 
 ## License
 
