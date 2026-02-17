@@ -29,6 +29,10 @@ outputs:
     description: '"true" if root config changed and all packages should be tested'
     value: ${{ steps.difftrace.outputs.test_all }}
 
+branding:
+  icon: "git-branch"
+  color: "orange"
+
 runs:
   using: "composite"
   steps:

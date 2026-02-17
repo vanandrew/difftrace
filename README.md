@@ -170,6 +170,7 @@ jobs:
     outputs:
       matrix: ${{ steps.diff.outputs.matrix }}
       has_affected: ${{ steps.diff.outputs.has_affected }}
+      test_all: ${{ steps.diff.outputs.test_all }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -185,12 +186,40 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - run: echo "Building and testing ${{ matrix.package }}"
+      - uses: astral-sh/setup-uv@v5
+      - name: Run pytest
+        run: uv run --directory packages/${{ matrix.package }} pytest
+
+  build:
+    needs: [detect, test]
+    if: needs.detect.outputs.has_affected == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: |
+          docker build \
+            -f packages/${{ matrix.package }}/Dockerfile \
+            -t ${{ matrix.package }}:${{ github.sha }} .
+
+  deploy:
+    needs: [detect, build]
+    if: github.ref == 'refs/heads/main' && needs.detect.outputs.has_affected == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy ${{ matrix.package }}
+        run: echo "Deploying ${{ matrix.package }}"
 ```
 
-The `matrix.package` output works with any per-package step — tests, builds, linting, deploys, etc.
+The `matrix.package` output works with any per-package step — tests, builds, linting, deploys, etc. The example above shows a typical pipeline where each stage gates the next: **detect** → **test** → **build** → **deploy**. The `build` job only runs for packages that pass tests, and `deploy` only runs on the `main` branch.
 
 > **Note:** `fetch-depth: 0` is required on the checkout step so that `git diff` can compare against the base ref. Without it, the shallow clone won't have enough history and difftrace will fail.
 
