@@ -64,25 +64,53 @@ runs:
     - name: Install difftrace
       shell: bash
       run: |
+        echo "::group::Install difftrace"
+        echo "Action path: ${{ github.action_path }}"
         uv venv -p python3.11
         uv pip install "${{ github.action_path }}"
+        echo "Installed version: $(uv run difftrace --version 2>/dev/null || echo 'unknown')"
+        echo "::endgroup::"
 
     - name: Validate inputs
       shell: bash
       run: |
+        echo "::group::Validate inputs"
+        echo "base:             ${{ inputs.base }}"
+        echo "lock-file:        ${{ inputs.lock-file }}"
+        echo "exclude-packages: ${{ inputs.exclude-packages }}"
+        echo "no-dev:           ${{ inputs.no-dev }}"
+        echo "no-optional:      ${{ inputs.no-optional }}"
+        echo "direct-only:      ${{ inputs.direct-only }}"
+        echo "root-triggers:    ${{ inputs.root-triggers }}"
+        echo "verbose:          ${{ inputs.verbose }}"
+        echo ""
+
         if [ ! -f "${{ inputs.lock-file }}" ]; then
           echo "::error::Lock file not found: ${{ inputs.lock-file }}"
           exit 1
         fi
+        echo "Lock file OK:      $(realpath "${{ inputs.lock-file }}")"
+
         if ! git rev-parse --verify "${{ inputs.base }}" >/dev/null 2>&1; then
           echo "::warning::Base ref '${{ inputs.base }}' cannot be resolved — difftrace may fail. Try 'git fetch' or checkout with fetch-depth: 0."
+        else
+          base_sha=$(git rev-parse "${{ inputs.base }}")
+          head_sha=$(git rev-parse HEAD)
+          echo "Base resolved to:  ${{ inputs.base }} -> $base_sha"
+          echo "HEAD:              $head_sha"
+          echo ""
+          echo "Changed files between base and HEAD:"
+          git diff --name-only "$base_sha" "$head_sha" | sed 's/^/  /' || echo "  (unable to compute diff)"
         fi
+        echo "::endgroup::"
 
     - name: Run difftrace
       id: difftrace
       shell: bash
       run: |
         set -euo pipefail
+
+        echo "::group::Build difftrace flags"
         FLAGS=""
         if [ -n "${{ inputs.exclude-packages }}" ]; then
           IFS=',' read -ra PKGS <<< "${{ inputs.exclude-packages }}"
@@ -114,10 +142,21 @@ runs:
         if [ "${{ inputs.verbose }}" = "true" ]; then
           FLAGS="$FLAGS --verbose"
         fi
+        CMD="uv run difftrace --base \"${{ inputs.base }}\" --lock-file \"${{ inputs.lock-file }}\" $FLAGS --json"
+        echo "Command: $CMD"
+        echo "::endgroup::"
+
+        echo "::group::Run difftrace"
         result=$(uv run difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
+        echo "Raw result:"
+        echo "$result" | uv run python3 -m json.tool || echo "$result"
+        echo "::endgroup::"
+
+        echo "::group::Compute outputs"
         affected=$(echo "$result" | uv run python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
         test_all=$(echo "$result" | uv run python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
         matrix=$(echo "$result" | uv run python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")
+        count=$(echo "$result" | uv run python3 -c "import sys, json; print(len(json.load(sys.stdin)['affected']))")
 
         if [ "$affected" = "[]" ]; then
           has_affected="false"
@@ -125,7 +164,34 @@ runs:
           has_affected="true"
         fi
 
+        echo "affected:     $affected"
+        echo "matrix:       $matrix"
+        echo "has_affected: $has_affected"
+        echo "test_all:     $test_all"
+        echo "count:        $count"
+
         echo "affected=$affected" >> "$GITHUB_OUTPUT"
         echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
         echo "has_affected=$has_affected" >> "$GITHUB_OUTPUT"
         echo "test_all=$test_all" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
+
+        {
+          echo "### difftrace"
+          echo ""
+          echo "| output | value |"
+          echo "| --- | --- |"
+          echo "| base | \`${{ inputs.base }}\` |"
+          echo "| lock-file | \`${{ inputs.lock-file }}\` |"
+          echo "| has_affected | \`$has_affected\` |"
+          echo "| test_all | \`$test_all\` |"
+          echo "| affected count | \`$count\` |"
+          echo ""
+          echo "<details><summary>Affected packages</summary>"
+          echo ""
+          echo '```json'
+          echo "$affected"
+          echo '```'
+          echo ""
+          echo "</details>"
+        } >> "$GITHUB_STEP_SUMMARY"
