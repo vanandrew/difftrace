@@ -56,14 +56,14 @@ branding:
 runs:
   using: "composite"
   steps:
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v8.0.0
       with:
-        python-version: "3.11"
+        enable-cache: true
 
     - name: Install difftrace
       shell: bash
-      run: pip install "${{ github.action_path }}"
+      run: uv pip install "${{ github.action_path }}"
 
     - name: Validate inputs
       shell: bash
@@ -112,10 +112,10 @@ runs:
         if [ "${{ inputs.verbose }}" = "true" ]; then
           FLAGS="$FLAGS --verbose"
         fi
-        result=$(difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
-        affected=$(echo "$result" | python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
-        test_all=$(echo "$result" | python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
-        matrix=$(echo "$result" | python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")
+        result=$(uv run difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
+        affected=$(echo "$result" | uv run python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
+        test_all=$(echo "$result" | uv run python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
+        matrix=$(echo "$result" | uv run python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")
 
         if [ "$affected" = "[]" ]; then
           has_affected="false"
