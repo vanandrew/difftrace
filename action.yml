@@ -63,7 +63,9 @@ runs:
 
     - name: Install difftrace
       shell: bash
-      run: uv pip install "${{ github.action_path }}"
+      run: |
+        uv venv -p python3.11
+        uv pip install "${{ github.action_path }}"
 
     - name: Validate inputs
       shell: bash
