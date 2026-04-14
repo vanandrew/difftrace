@@ -24,8 +24,8 @@ def get_git_root(cwd: Path | None = None) -> Path:
             cwd=cwd,
             timeout=30,
         )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("git command timed out after 30 seconds")
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("git command timed out after 30 seconds") from e
     if result.returncode != 0:
         raise ValueError("Not a git repository. Run difftrace from within a git repo.")
     logger.debug("Git root: %s", result.stdout.strip())
@@ -79,8 +79,8 @@ def get_changed_files(base_ref: str, repo_root: Path | None = None) -> list[str]
             cwd=repo_root,
             timeout=30,
         )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("git command timed out after 30 seconds")
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("git command timed out after 30 seconds") from e
     if result.returncode != 0:
         stderr = result.stderr.strip()
         if "unknown revision" in stderr or "not a git repository" in stderr:

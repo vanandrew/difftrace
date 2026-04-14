@@ -31,7 +31,7 @@ class TestFullPipeline:
         graph = parse_lock_file(lock_file)
 
         changed_files = ["packages/shared/models.py"]
-        directly_changed, test_all = map_files_to_packages(
+        directly_changed, _test_all = map_files_to_packages(
             changed_files, graph.packages
         )
         affected = find_affected_packages(directly_changed, graph.reverse)
@@ -46,7 +46,7 @@ class TestFullPipeline:
         graph = parse_lock_file(lock_file)
 
         changed_files = ["packages/shared/core.py"]
-        directly_changed, test_all = map_files_to_packages(
+        directly_changed, _test_all = map_files_to_packages(
             changed_files, graph.packages
         )
         affected = find_affected_packages(directly_changed, graph.reverse)
@@ -61,7 +61,7 @@ class TestFullPipeline:
         graph = parse_lock_file(lock_file)
 
         changed_files = ["pyproject.toml"]
-        directly_changed, test_all = map_files_to_packages(
+        _directly_changed, test_all = map_files_to_packages(
             changed_files, graph.packages
         )
 
@@ -90,7 +90,7 @@ class TestFullPipeline:
         graph = parse_lock_file(lock_file)
 
         changed_files = ["packages/api/main.py"]
-        directly_changed, test_all = map_files_to_packages(
+        directly_changed, _test_all = map_files_to_packages(
             changed_files, graph.packages
         )
         affected = find_affected_packages(directly_changed, graph.reverse)
@@ -118,7 +118,7 @@ class TestFullPipeline:
         workspace_files = relativize_to_workspace(git_files, git_root, workspace_root)
         assert workspace_files == ["packages/api/main.py", "packages/shared/lib.py"]
 
-        directly_changed, test_all = map_files_to_packages(
+        directly_changed, _test_all = map_files_to_packages(
             workspace_files, graph.packages
         )
         affected = find_affected_packages(directly_changed, graph.reverse)

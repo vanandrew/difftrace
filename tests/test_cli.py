@@ -106,12 +106,12 @@ class TestParseTriggers:
         assert dirs == DEFAULT_DIR_TRIGGERS
 
     def test_file_trigger(self):
-        root, dirs = _parse_triggers(["Dockerfile"])
+        root, _dirs = _parse_triggers(["Dockerfile"])
         assert "Dockerfile" in root
         assert root >= DEFAULT_ROOT_TRIGGERS
 
     def test_dir_trigger(self):
-        root, dirs = _parse_triggers(["docker/"])
+        _root, dirs = _parse_triggers(["docker/"])
         assert "docker/" in dirs
         assert dirs >= DEFAULT_DIR_TRIGGERS
 
@@ -191,7 +191,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path)
         result = run(args)
@@ -218,7 +223,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path, direct_only=True)
         result = run(args)
@@ -246,7 +256,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path)
         result = run(args)
@@ -273,7 +288,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path, detailed=True)
         result = run(args)
@@ -300,7 +320,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path, exclude=["api"])
         result = run(args)
@@ -329,7 +354,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path, no_dev=True)
         result = run(args)
@@ -355,7 +385,12 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         args = self._make_args(tmp_path, no_optional=True)
         result = run(args)
@@ -433,25 +468,22 @@ class TestMain:
     @patch("difftrace.cli.run")
     def test_error_file_not_found(self, mock_run, capsys):
         mock_run.side_effect = FileNotFoundError("uv.lock not found")
-        with patch("sys.argv", ["difftrace"]):
-            with pytest.raises(SystemExit, match="1"):
-                main()
+        with patch("sys.argv", ["difftrace"]), pytest.raises(SystemExit, match="1"):
+            main()
         err = capsys.readouterr().err
         assert "uv.lock not found" in err
 
     @patch("difftrace.cli.run")
     def test_error_timeout(self, mock_run, capsys):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=30)
-        with patch("sys.argv", ["difftrace"]):
-            with pytest.raises(SystemExit, match="1"):
-                main()
+        with patch("sys.argv", ["difftrace"]), pytest.raises(SystemExit, match="1"):
+            main()
 
     @patch("difftrace.cli.run")
     def test_error_called_process_error(self, mock_run, capsys):
         mock_run.side_effect = subprocess.CalledProcessError(returncode=1, cmd="git")
-        with patch("sys.argv", ["difftrace"]):
-            with pytest.raises(SystemExit, match="1"):
-                main()
+        with patch("sys.argv", ["difftrace"]), pytest.raises(SystemExit, match="1"):
+            main()
 
 
 class TestExcludeCli:
@@ -478,7 +510,12 @@ class TestExcludeCli:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         parser = build_parser()
         args = parser.parse_args(
@@ -515,7 +552,12 @@ class TestExcludeCli:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         parser = build_parser()
         args = parser.parse_args(
@@ -557,7 +599,12 @@ class TestExcludeCli:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
 
         parser = build_parser()
         args = parser.parse_args(

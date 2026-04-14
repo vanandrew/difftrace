@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 
 from difftrace.diff import (
-    _resolve_sha,
     get_changed_files,
     get_git_root,
     map_files_to_packages,
@@ -175,17 +174,17 @@ class TestMapFilesToPackages:
 
     def test_root_pyproject_triggers_test_all(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(["pyproject.toml"], packages)
+        _changed, test_all = map_files_to_packages(["pyproject.toml"], packages)
         assert test_all is True
 
     def test_uv_lock_triggers_test_all(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(["uv.lock"], packages)
+        _changed, test_all = map_files_to_packages(["uv.lock"], packages)
         assert test_all is True
 
     def test_github_dir_triggers_test_all(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _changed, test_all = map_files_to_packages(
             [".github/workflows/ci.yml"], packages
         )
         assert test_all is True
@@ -203,7 +202,7 @@ class TestMapFilesToPackages:
             "myproject": WorkspacePackage(name="myproject", source_path="."),
             "api": WorkspacePackage(name="api", source_path="packages/api"),
         }
-        changed, test_all = map_files_to_packages(["packages/api/main.py"], packages)
+        changed, _test_all = map_files_to_packages(["packages/api/main.py"], packages)
         assert changed == {"api"}
         # Virtual root should not match
         assert "myproject" not in changed
@@ -217,14 +216,14 @@ class TestMapFilesToPackages:
     def test_prefix_no_false_match(self):
         """'packages/api-extra/foo.py' should NOT match 'packages/api'."""
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        changed, _test_all = map_files_to_packages(
             ["packages/api-extra/foo.py"], packages
         )
         assert changed == set()
 
     def test_custom_root_trigger(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _changed, test_all = map_files_to_packages(
             ["Dockerfile"],
             packages,
             root_triggers={"Dockerfile"},
@@ -234,7 +233,7 @@ class TestMapFilesToPackages:
 
     def test_custom_dir_trigger(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _changed, test_all = map_files_to_packages(
             ["docker/compose.yml"],
             packages,
             root_triggers=set(),

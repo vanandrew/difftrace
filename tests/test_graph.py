@@ -101,9 +101,11 @@ class TestParseLockFile:
     def test_unknown_lock_version_warns(self, tmp_path, caplog):
         lock_file = tmp_path / "uv.lock"
         lock_file.write_text("version = 99\n\n[manifest]\nmembers = []\n")
-        with caplog.at_level(logging.WARNING, logger="difftrace.graph"):
-            with pytest.raises(ValueError):
-                parse_lock_file(lock_file)
+        with (
+            caplog.at_level(logging.WARNING, logger="difftrace.graph"),
+            pytest.raises(ValueError),
+        ):
+            parse_lock_file(lock_file)
         assert "version 99" in caplog.text
         assert "not recognized" in caplog.text
 
