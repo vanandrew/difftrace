@@ -29,6 +29,13 @@ jobs:
             expect_has_affected: "true"
             expect_test_all: "true"
             expect_contains: "core api frontend"
+          - name: test-all-flag
+            file: ""
+            base: HEAD
+            test_all: "true"
+            expect_has_affected: "true"
+            expect_test_all: "true"
+            expect_contains: "core api frontend"
           - name: no-changes
             file: ""
             base: HEAD
@@ -54,6 +61,7 @@ jobs:
         with:
           lock-file: tests/fixtures/workspace/uv.lock
           base: ${{ matrix.base || 'HEAD~1' }}
+          test-all: ${{ matrix.test_all || 'false' }}
           verbose: "true"
 
       - name: Validate outputs
