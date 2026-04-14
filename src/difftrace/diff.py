@@ -32,6 +32,23 @@ def get_git_root(cwd: Path | None = None) -> Path:
     return Path(result.stdout.strip())
 
 
+def _resolve_sha(ref: str, cwd: Path | None = None) -> str | None:
+    """Resolve a git ref to its SHA, or None if it can't be resolved."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
 def get_changed_files(base_ref: str, repo_root: Path | None = None) -> list[str]:
     """Get list of files changed between base_ref and HEAD.
 
@@ -41,6 +58,19 @@ def get_changed_files(base_ref: str, repo_root: Path | None = None) -> list[str]
         raise ValueError("base_ref must not be empty")
     if "\x00" in base_ref:
         raise ValueError("base_ref must not contain null bytes")
+
+    # Warn if base_ref and HEAD resolve to the same commit (empty diff).
+    base_sha = _resolve_sha(base_ref, cwd=repo_root)
+    head_sha = _resolve_sha("HEAD", cwd=repo_root)
+    if base_sha and head_sha and base_sha == head_sha:
+        logger.warning(
+            "Base ref '%s' and HEAD resolve to the same commit (%s). "
+            "Diff will be empty. In CI push workflows, use the pre-push SHA "
+            "(e.g. --base ${{ github.event.before }}) instead of origin/main.",
+            base_ref,
+            base_sha[:12],
+        )
+
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", f"{base_ref}...HEAD"],

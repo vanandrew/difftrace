@@ -1,3 +1,4 @@
+import logging
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -5,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from difftrace.diff import (
+    _resolve_sha,
     get_changed_files,
     get_git_root,
     map_files_to_packages,
@@ -80,6 +82,42 @@ class TestGetChangedFiles:
     def test_invalid_base_ref_null_byte(self):
         with pytest.raises(ValueError, match="must not contain null bytes"):
             get_changed_files("origin/main\x00exploit")
+
+    @patch("difftrace.diff._resolve_sha")
+    @patch("difftrace.diff.subprocess.run")
+    def test_same_commit_warns(self, mock_run, mock_resolve, caplog):
+        """When base and HEAD resolve to the same SHA, a warning is logged."""
+        mock_resolve.return_value = "abc123def456"
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        with caplog.at_level(logging.WARNING, logger="difftrace.diff"):
+            result = get_changed_files("origin/main")
+        assert result == []
+        assert "same commit" in caplog.text
+        assert "abc123def456" in caplog.text
+
+    @patch("difftrace.diff._resolve_sha")
+    @patch("difftrace.diff.subprocess.run")
+    def test_different_commits_no_warning(self, mock_run, mock_resolve, caplog):
+        """When base and HEAD resolve to different SHAs, no warning is logged."""
+        mock_resolve.side_effect = ["aaa111", "bbb222"]
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "packages/api/main.py\n"
+        with caplog.at_level(logging.WARNING, logger="difftrace.diff"):
+            result = get_changed_files("origin/main")
+        assert result == ["packages/api/main.py"]
+        assert "same commit" not in caplog.text
+
+    @patch("difftrace.diff._resolve_sha")
+    @patch("difftrace.diff.subprocess.run")
+    def test_unresolvable_ref_no_warning(self, mock_run, mock_resolve, caplog):
+        """When a ref can't be resolved, skip the warning (let git diff handle it)."""
+        mock_resolve.return_value = None
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        with caplog.at_level(logging.WARNING, logger="difftrace.diff"):
+            get_changed_files("origin/main")
+        assert "same commit" not in caplog.text
 
 
 class TestRelativizeToWorkspace:

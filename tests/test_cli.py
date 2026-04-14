@@ -121,6 +121,11 @@ class TestParseTriggers:
         assert "docker/" in dirs
 
 
+def _sha_result(sha: str):
+    """Create a mock subprocess result for _resolve_sha calls."""
+    return type("R", (), {"returncode": 0, "stdout": sha + "\n", "stderr": ""})()
+
+
 SIMPLE_LOCK = """\
 version = 1
 
@@ -186,7 +191,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path)
         result = run(args)
@@ -213,7 +218,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path, direct_only=True)
         result = run(args)
@@ -241,7 +246,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path)
         result = run(args)
@@ -268,7 +273,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path, detailed=True)
         result = run(args)
@@ -295,7 +300,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path, exclude=["api"])
         result = run(args)
@@ -324,7 +329,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path, no_dev=True)
         result = run(args)
@@ -350,7 +355,7 @@ class TestRun:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         args = self._make_args(tmp_path, no_optional=True)
         result = run(args)
@@ -473,7 +478,7 @@ class TestExcludeCli:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         parser = build_parser()
         args = parser.parse_args(
@@ -510,7 +515,7 @@ class TestExcludeCli:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         parser = build_parser()
         args = parser.parse_args(
@@ -552,7 +557,7 @@ class TestExcludeCli:
                 "stderr": "",
             },
         )()
-        mock_run.side_effect = [git_root_result, diff_result]
+        mock_run.side_effect = [git_root_result, _sha_result("aaa"), _sha_result("bbb"), diff_result]
 
         parser = build_parser()
         args = parser.parse_args(
