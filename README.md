@@ -120,6 +120,7 @@ You can always override with an explicit `base`:
 | `no-dev` | `false` | Exclude dev dependencies from the dependency graph |
 | `no-optional` | `false` | Exclude optional dependencies from the dependency graph |
 | `direct-only` | `false` | Only output directly changed packages, skip transitive dependents |
+| `test-all` | `false` | Force testing all packages, skipping git diff entirely |
 | `root-triggers` | — | Comma-separated list of additional trigger patterns (e.g. `Dockerfile,docker/`) |
 | `verbose` | `false` | Enable debug logging to stderr |
 
@@ -130,7 +131,7 @@ You can always override with an explicit `base`:
 | `affected` | JSON array of affected package names |
 | `matrix` | `{"package": [...]}` for `strategy.matrix` |
 | `has_affected` | `"true"` or `"false"` |
-| `test_all` | `"true"` if root config changed |
+| `test_all` | `"true"` if root config changed or `test-all` input is set |
 
 ## Installation
 
@@ -161,6 +162,9 @@ difftrace --paths
 
 # Only directly changed packages (skip transitive dependents)
 difftrace --direct-only
+
+# Force testing all packages (skip git diff entirely)
+difftrace --test-all
 
 # Show which files mapped to which packages
 difftrace --detailed
@@ -236,6 +240,7 @@ packages/worker
 | `--names` | off | Output affected package names, one per line |
 | `--paths` | off | Output affected source paths, one per line |
 | `--direct-only` | off | Only report directly changed packages |
+| `--test-all` | off | Force testing all packages, skip git diff entirely |
 | `--detailed` | off | Include file-to-package mappings in output |
 | `--no-dev` | off | Exclude dev dependencies from the graph |
 | `--no-optional` | off | Exclude optional dependencies from the graph |
