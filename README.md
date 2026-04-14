@@ -46,8 +46,6 @@ jobs:
           fetch-depth: 0  # required so git diff can see the full history
       - uses: vanandrew/difftrace@v1
         id: diff
-        with:
-          base: origin/main
 
   test:
     needs: detect
@@ -92,11 +90,31 @@ The `matrix.package` output works with any per-package step — tests, builds, l
 
 > **Note:** `fetch-depth: 0` is required on the checkout step so that `git diff` can compare against the base ref. Without it, the shallow clone won't have enough history and difftrace will fail.
 
+### Base Ref Auto-Detection
+
+When no explicit `base` is provided, the action automatically picks the right ref based on the GitHub event:
+
+| Event | Base ref used |
+|-------|---------------|
+| `pull_request` | `origin/<PR target branch>` |
+| `push` | `github.event.before` (the pre-push SHA) |
+| Other / fallback | `origin/<default branch>` |
+
+This matters for **push-to-main workflows**: by the time the action runs, `origin/main` already points to the just-pushed commit, so diffing against it would produce an empty diff. The action avoids this by using the pre-push SHA instead.
+
+You can always override with an explicit `base`:
+
+```yaml
+- uses: vanandrew/difftrace@v1
+  with:
+    base: origin/develop
+```
+
 ### Action Inputs
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `base` | `origin/main` | Base ref to diff against |
+| `base` | auto-detect | Base ref to diff against (see above) |
 | `lock-file` | `uv.lock` | Path to uv lock file |
 | `exclude-packages` | — | Comma-separated list of packages to exclude |
 | `no-dev` | `false` | Exclude dev dependencies from the dependency graph |

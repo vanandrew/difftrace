@@ -1,3 +1,4 @@
+import logging
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -81,6 +82,42 @@ class TestGetChangedFiles:
         with pytest.raises(ValueError, match="must not contain null bytes"):
             get_changed_files("origin/main\x00exploit")
 
+    @patch("difftrace.diff._resolve_sha")
+    @patch("difftrace.diff.subprocess.run")
+    def test_same_commit_warns(self, mock_run, mock_resolve, caplog):
+        """When base and HEAD resolve to the same SHA, a warning is logged."""
+        mock_resolve.return_value = "abc123def456"
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        with caplog.at_level(logging.WARNING, logger="difftrace.diff"):
+            result = get_changed_files("origin/main")
+        assert result == []
+        assert "same commit" in caplog.text
+        assert "abc123def456" in caplog.text
+
+    @patch("difftrace.diff._resolve_sha")
+    @patch("difftrace.diff.subprocess.run")
+    def test_different_commits_no_warning(self, mock_run, mock_resolve, caplog):
+        """When base and HEAD resolve to different SHAs, no warning is logged."""
+        mock_resolve.side_effect = ["aaa111", "bbb222"]
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "packages/api/main.py\n"
+        with caplog.at_level(logging.WARNING, logger="difftrace.diff"):
+            result = get_changed_files("origin/main")
+        assert result == ["packages/api/main.py"]
+        assert "same commit" not in caplog.text
+
+    @patch("difftrace.diff._resolve_sha")
+    @patch("difftrace.diff.subprocess.run")
+    def test_unresolvable_ref_no_warning(self, mock_run, mock_resolve, caplog):
+        """When a ref can't be resolved, skip the warning (let git diff handle it)."""
+        mock_resolve.return_value = None
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        with caplog.at_level(logging.WARNING, logger="difftrace.diff"):
+            get_changed_files("origin/main")
+        assert "same commit" not in caplog.text
+
 
 class TestRelativizeToWorkspace:
     def test_same_root(self, tmp_path):
@@ -137,17 +174,17 @@ class TestMapFilesToPackages:
 
     def test_root_pyproject_triggers_test_all(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(["pyproject.toml"], packages)
+        _changed, test_all = map_files_to_packages(["pyproject.toml"], packages)
         assert test_all is True
 
     def test_uv_lock_triggers_test_all(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(["uv.lock"], packages)
+        _changed, test_all = map_files_to_packages(["uv.lock"], packages)
         assert test_all is True
 
     def test_github_dir_triggers_test_all(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _changed, test_all = map_files_to_packages(
             [".github/workflows/ci.yml"], packages
         )
         assert test_all is True
@@ -165,7 +202,7 @@ class TestMapFilesToPackages:
             "myproject": WorkspacePackage(name="myproject", source_path="."),
             "api": WorkspacePackage(name="api", source_path="packages/api"),
         }
-        changed, test_all = map_files_to_packages(["packages/api/main.py"], packages)
+        changed, _test_all = map_files_to_packages(["packages/api/main.py"], packages)
         assert changed == {"api"}
         # Virtual root should not match
         assert "myproject" not in changed
@@ -179,14 +216,14 @@ class TestMapFilesToPackages:
     def test_prefix_no_false_match(self):
         """'packages/api-extra/foo.py' should NOT match 'packages/api'."""
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        changed, _test_all = map_files_to_packages(
             ["packages/api-extra/foo.py"], packages
         )
         assert changed == set()
 
     def test_custom_root_trigger(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _changed, test_all = map_files_to_packages(
             ["Dockerfile"],
             packages,
             root_triggers={"Dockerfile"},
@@ -196,7 +233,7 @@ class TestMapFilesToPackages:
 
     def test_custom_dir_trigger(self):
         packages = self._make_packages()
-        changed, test_all = map_files_to_packages(
+        _changed, test_all = map_files_to_packages(
             ["docker/compose.yml"],
             packages,
             root_triggers=set(),

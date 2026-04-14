@@ -3,9 +3,9 @@ description: "Change detection for uv monorepos — find affected packages from 
 
 inputs:
   base:
-    description: "Base ref to diff against"
+    description: "Base ref to diff against (auto-detected from event context when empty)"
     required: false
-    default: "origin/main"
+    default: ""
   lock-file:
     description: "Path to uv.lock file"
     required: false
@@ -71,11 +71,36 @@ runs:
         echo "Installed version: $(uv run difftrace --version 2>/dev/null || echo 'unknown')"
         echo "::endgroup::"
 
+    - name: Resolve base ref
+      id: resolve-base
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.base }}" ]; then
+          echo "base=${{ inputs.base }}" >> "$GITHUB_OUTPUT"
+          echo "Using explicit base ref: ${{ inputs.base }}"
+        elif [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "base=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          echo "Auto-detected base ref for pull_request: origin/${{ github.base_ref }}"
+        elif [ "${{ github.event_name }}" = "push" ]; then
+          BEFORE="${{ github.event.before }}"
+          NULL_SHA="0000000000000000000000000000000000000000"
+          if [ "$BEFORE" = "$NULL_SHA" ]; then
+            echo "base=origin/${{ github.event.repository.default_branch }}" >> "$GITHUB_OUTPUT"
+            echo "::warning::First push to branch — falling back to origin/${{ github.event.repository.default_branch }}"
+          else
+            echo "base=$BEFORE" >> "$GITHUB_OUTPUT"
+            echo "Auto-detected base ref for push: $BEFORE"
+          fi
+        else
+          echo "base=origin/${{ github.event.repository.default_branch }}" >> "$GITHUB_OUTPUT"
+          echo "Falling back to origin/${{ github.event.repository.default_branch }}"
+        fi
+
     - name: Validate inputs
       shell: bash
       run: |
         echo "::group::Validate inputs"
-        echo "base:             ${{ inputs.base }}"
+        echo "base:             ${{ steps.resolve-base.outputs.base }}"
         echo "lock-file:        ${{ inputs.lock-file }}"
         echo "exclude-packages: ${{ inputs.exclude-packages }}"
         echo "no-dev:           ${{ inputs.no-dev }}"
@@ -91,12 +116,12 @@ runs:
         fi
         echo "Lock file OK:      $(realpath "${{ inputs.lock-file }}")"
 
-        if ! git rev-parse --verify "${{ inputs.base }}" >/dev/null 2>&1; then
-          echo "::warning::Base ref '${{ inputs.base }}' cannot be resolved — difftrace may fail. Try 'git fetch' or checkout with fetch-depth: 0."
+        if ! git rev-parse --verify "${{ steps.resolve-base.outputs.base }}" >/dev/null 2>&1; then
+          echo "::warning::Base ref '${{ steps.resolve-base.outputs.base }}' cannot be resolved — difftrace may fail. Try 'git fetch' or checkout with fetch-depth: 0."
         else
-          base_sha=$(git rev-parse "${{ inputs.base }}")
+          base_sha=$(git rev-parse "${{ steps.resolve-base.outputs.base }}")
           head_sha=$(git rev-parse HEAD)
-          echo "Base resolved to:  ${{ inputs.base }} -> $base_sha"
+          echo "Base resolved to:  ${{ steps.resolve-base.outputs.base }} -> $base_sha"
           echo "HEAD:              $head_sha"
           echo ""
           echo "Changed files between base and HEAD:"
@@ -142,12 +167,12 @@ runs:
         if [ "${{ inputs.verbose }}" = "true" ]; then
           FLAGS="$FLAGS --verbose"
         fi
-        CMD="uv run difftrace --base \"${{ inputs.base }}\" --lock-file \"${{ inputs.lock-file }}\" $FLAGS --json"
+        CMD="uv run difftrace --base \"${{ steps.resolve-base.outputs.base }}\" --lock-file \"${{ inputs.lock-file }}\" $FLAGS --json"
         echo "Command: $CMD"
         echo "::endgroup::"
 
         echo "::group::Run difftrace"
-        result=$(uv run difftrace --base "${{ inputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
+        result=$(uv run difftrace --base "${{ steps.resolve-base.outputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
         echo "Raw result:"
         echo "$result" | uv run python3 -m json.tool || echo "$result"
         echo "::endgroup::"
@@ -181,7 +206,7 @@ runs:
           echo ""
           echo "| output | value |"
           echo "| --- | --- |"
-          echo "| base | \`${{ inputs.base }}\` |"
+          echo "| base | \`${{ steps.resolve-base.outputs.base }}\` |"
           echo "| lock-file | \`${{ inputs.lock-file }}\` |"
           echo "| has_affected | \`$has_affected\` |"
           echo "| test_all | \`$test_all\` |"
