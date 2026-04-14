@@ -1,0 +1,106 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-action:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: transitive
+            file: tests/fixtures/workspace/packages/core/src/__init__.py
+            expect_has_affected: "true"
+            expect_test_all: "false"
+            expect_contains: "core api frontend"
+          - name: leaf
+            file: tests/fixtures/workspace/packages/frontend/src/__init__.py
+            expect_has_affected: "true"
+            expect_test_all: "false"
+            expect_contains: "frontend"
+            expect_not_contains: "core api"
+          - name: root-trigger
+            file: tests/fixtures/workspace/pyproject.toml
+            expect_has_affected: "true"
+            expect_test_all: "true"
+            expect_contains: "core api frontend"
+          - name: no-changes
+            file: ""
+            expect_has_affected: "false"
+            expect_test_all: "false"
+    name: test-action (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test commit
+        if: matrix.file != ''
+        run: |
+          git config user.name "test"
+          git config user.email "test@test.com"
+          echo "# test change" >> "${{ matrix.file }}"
+          git add -A
+          git commit -m "test: change for ${{ matrix.name }}"
+
+      - uses: ./
+        id: diff
+        with:
+          lock-file: tests/fixtures/workspace/uv.lock
+          base: HEAD~1
+          verbose: "true"
+
+      - name: Validate outputs
+        run: |
+          set -euo pipefail
+
+          echo "== Outputs =="
+          echo "affected:     $AFFECTED"
+          echo "has_affected: $HAS_AFFECTED"
+          echo "test_all:     $TEST_ALL"
+          echo "matrix:       $MATRIX"
+          echo ""
+
+          # Validate JSON structure
+          echo "$AFFECTED" | python3 -c "import sys, json; json.load(sys.stdin)"
+          echo "$MATRIX" | python3 -c "import sys, json; d = json.load(sys.stdin); assert 'package' in d"
+
+          # Validate has_affected
+          if [ "$HAS_AFFECTED" != "${{ matrix.expect_has_affected }}" ]; then
+            echo "FAIL: expected has_affected=${{ matrix.expect_has_affected }}, got $HAS_AFFECTED"
+            exit 1
+          fi
+
+          # Validate test_all
+          if [ "$TEST_ALL" != "${{ matrix.expect_test_all }}" ]; then
+            echo "FAIL: expected test_all=${{ matrix.expect_test_all }}, got $TEST_ALL"
+            exit 1
+          fi
+
+          # Validate expected packages are present
+          for pkg in ${{ matrix.expect_contains }}; do
+            if ! echo "$AFFECTED" | python3 -c "import sys, json; assert '$pkg' in json.load(sys.stdin), '$pkg not found'"; then
+              echo "FAIL: expected '$pkg' in affected"
+              exit 1
+            fi
+          done
+
+          # Validate unexpected packages are absent
+          for pkg in ${{ matrix.expect_not_contains }}; do
+            if echo "$AFFECTED" | python3 -c "import sys, json; assert '$pkg' in json.load(sys.stdin)" 2>/dev/null; then
+              echo "FAIL: '$pkg' should not be in affected"
+              exit 1
+            fi
+          done
+
+          echo "PASS: ${{ matrix.name }}"
+        env:
+          AFFECTED: ${{ steps.diff.outputs.affected }}
+          HAS_AFFECTED: ${{ steps.diff.outputs.has_affected }}
+          TEST_ALL: ${{ steps.diff.outputs.test_all }}
+          MATRIX: ${{ steps.diff.outputs.matrix }}
