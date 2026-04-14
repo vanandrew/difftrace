@@ -26,6 +26,10 @@ inputs:
     description: "Only output directly changed packages, skip transitive dependents"
     required: false
     default: "false"
+  test-all:
+    description: "Force testing all packages, skipping git diff entirely"
+    required: false
+    default: "false"
   root-triggers:
     description: "Comma-separated list of additional file/dir patterns that trigger test_all (e.g. 'Dockerfile,docker/'). Append / for directory prefixes."
     required: false
@@ -106,6 +110,7 @@ runs:
         echo "no-dev:           ${{ inputs.no-dev }}"
         echo "no-optional:      ${{ inputs.no-optional }}"
         echo "direct-only:      ${{ inputs.direct-only }}"
+        echo "test-all:         ${{ inputs.test-all }}"
         echo "root-triggers:    ${{ inputs.root-triggers }}"
         echo "verbose:          ${{ inputs.verbose }}"
         echo ""
@@ -154,6 +159,9 @@ runs:
         fi
         if [ "${{ inputs.direct-only }}" = "true" ]; then
           FLAGS="$FLAGS --direct-only"
+        fi
+        if [ "${{ inputs.test-all }}" = "true" ]; then
+          FLAGS="$FLAGS --test-all"
         fi
         if [ -n "${{ inputs.root-triggers }}" ]; then
           IFS=',' read -ra TRIGGERS <<< "${{ inputs.root-triggers }}"

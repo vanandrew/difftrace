@@ -75,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only output directly changed packages, skip transitive deps",
     )
     parser.add_argument(
+        "--test-all",
+        action="store_true",
+        help="Force testing all packages, skipping git diff entirely",
+    )
+    parser.add_argument(
         "--detailed",
         action="store_true",
         help="Show changed files and their package mapping",
@@ -130,34 +135,41 @@ def run(args: argparse.Namespace) -> dict:
         include_optional=not args.no_optional,
     )
 
-    git_root = get_git_root(cwd=workspace_root)
-    changed_files = get_changed_files(args.base, repo_root=git_root)
-    workspace_files = relativize_to_workspace(changed_files, git_root, workspace_root)
-
-    root_triggers, dir_triggers = _parse_triggers(args.root_trigger)
-
-    directly_changed, test_all = map_files_to_packages(
-        workspace_files,
-        graph.packages,
-        root_triggers=root_triggers,
-        dir_triggers=dir_triggers,
-    )
-
     # Filter out virtual root packages — they have no code/tests to run
     virtual_roots = {
         name for name, pkg in graph.packages.items() if pkg.source_path == "."
     }
-
     exclude_set = set(args.exclude or [])
 
-    if args.direct_only:
-        affected = directly_changed - virtual_roots
-    elif test_all:
+    if args.test_all:
+        test_all = True
+        directly_changed: set[str] = set()
         affected = set(graph.packages.keys()) - virtual_roots
+        workspace_files: list[str] = []
     else:
-        affected = (
-            find_affected_packages(directly_changed, graph.reverse) - virtual_roots
+        git_root = get_git_root(cwd=workspace_root)
+        changed_files = get_changed_files(args.base, repo_root=git_root)
+        workspace_files = relativize_to_workspace(
+            changed_files, git_root, workspace_root
         )
+
+        root_triggers, dir_triggers = _parse_triggers(args.root_trigger)
+
+        directly_changed, test_all = map_files_to_packages(
+            workspace_files,
+            graph.packages,
+            root_triggers=root_triggers,
+            dir_triggers=dir_triggers,
+        )
+
+        if args.direct_only:
+            affected = directly_changed - virtual_roots
+        elif test_all:
+            affected = set(graph.packages.keys()) - virtual_roots
+        else:
+            affected = (
+                find_affected_packages(directly_changed, graph.reverse) - virtual_roots
+            )
 
     directly_changed -= exclude_set
     affected -= exclude_set
@@ -237,7 +249,7 @@ def _print_human(result: dict, *, detailed: bool = False) -> None:
     test_all = result["test_all"]
 
     if test_all:
-        print("Root config changed — testing all packages")
+        print("Testing all packages")
         print()
 
     if detailed:
