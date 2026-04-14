@@ -31,6 +31,7 @@ jobs:
             expect_contains: "core api frontend"
           - name: no-changes
             file: ""
+            base: HEAD
             expect_has_affected: "false"
             expect_test_all: "false"
     name: test-action (${{ matrix.name }})
@@ -52,7 +53,7 @@ jobs:
         id: diff
         with:
           lock-file: tests/fixtures/workspace/uv.lock
-          base: HEAD~1
+          base: ${{ matrix.base || 'HEAD~1' }}
           verbose: "true"
 
       - name: Validate outputs
