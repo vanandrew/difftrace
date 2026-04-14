@@ -84,6 +84,11 @@ class TestBuildParser:
         args = parser.parse_args(["--detailed"])
         assert args.detailed is True
 
+    def test_test_all_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["--test-all"])
+        assert args.test_all is True
+
     def test_defaults(self):
         parser = build_parser()
         args = parser.parse_args([])
@@ -93,6 +98,7 @@ class TestBuildParser:
         assert args.no_dev is False
         assert args.no_optional is False
         assert args.direct_only is False
+        assert args.test_all is False
         assert args.detailed is False
         assert args.verbose is False
         assert args.root_trigger is None
@@ -333,6 +339,37 @@ class TestRun:
         assert "api" not in result["affected"]
         assert "shared" in result["affected"]
         assert "worker" in result["affected"]
+
+    def test_test_all_flag(self, tmp_path):
+        """--test-all skips git diff and returns all packages."""
+        args = self._make_args(tmp_path, test_all=True)
+        result = run(args)
+        assert result["test_all"] is True
+        assert set(result["affected"]) == {"api", "shared", "worker"}
+        assert result["directly_changed"] == []
+        assert result["changed_files"] == []
+
+    def test_test_all_with_exclude(self, tmp_path):
+        """--test-all respects --exclude."""
+        args = self._make_args(tmp_path, test_all=True, exclude=["api"])
+        result = run(args)
+        assert result["test_all"] is True
+        assert "api" not in result["affected"]
+        assert set(result["affected"]) == {"shared", "worker"}
+
+    def test_test_all_excludes_virtual_roots(self, tmp_path):
+        """--test-all excludes virtual root packages."""
+        from tests.conftest import VIRTUAL_ROOT_LOCK
+
+        lock_file = tmp_path / "uv.lock"
+        lock_file.write_text(VIRTUAL_ROOT_LOCK)
+        parser = build_parser()
+        defaults = parser.parse_args([])
+        defaults.lock_file = str(lock_file)
+        defaults.test_all = True
+        result = run(defaults)
+        assert "myproject" not in result["affected"]
+        assert set(result["affected"]) == {"api", "lib"}
 
     @patch("difftrace.diff.subprocess.run")
     def test_no_dev(self, mock_run, tmp_path):
@@ -653,7 +690,7 @@ class TestPrintHuman:
         }
         _print_human(result)
         out = capsys.readouterr().out
-        assert "Root config changed" in out
+        assert "Testing all packages" in out
 
     def test_detailed_with_mapping(self, capsys):
         result = {
