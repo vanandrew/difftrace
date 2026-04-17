@@ -1,0 +1,31 @@
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[manifest]
+members = [
+    "api",
+    "core",
+    "python-workspace-root",
+]
+
+[[package]]
+name = "api"
+version = "0.1.0"
+source = { editable = "packages/api" }
+dependencies = [
+    { name = "core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "core", editable = "packages/core" }]
+
+[[package]]
+name = "core"
+version = "0.1.0"
+source = { editable = "packages/core" }
+
+[[package]]
+name = "python-workspace-root"
+version = "0.0.0"
+source = { virtual = "." }

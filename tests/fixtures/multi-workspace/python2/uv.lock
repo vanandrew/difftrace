@@ -1,0 +1,31 @@
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[manifest]
+members = [
+    "api",
+    "python2-workspace-root",
+    "worker",
+]
+
+[[package]]
+name = "api"
+version = "0.1.0"
+source = { editable = "packages/api" }
+dependencies = [
+    { name = "worker" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "worker", editable = "packages/worker" }]
+
+[[package]]
+name = "python2-workspace-root"
+version = "0.0.0"
+source = { virtual = "." }
+
+[[package]]
+name = "worker"
+version = "0.1.0"
+source = { editable = "packages/worker" }

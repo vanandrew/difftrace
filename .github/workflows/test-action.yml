@@ -113,3 +113,164 @@ jobs:
           HAS_AFFECTED: ${{ steps.diff.outputs.has_affected }}
           TEST_ALL: ${{ steps.diff.outputs.test_all }}
           MATRIX: ${{ steps.diff.outputs.matrix }}
+
+  test-action-multi:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Change in python/api → only python/api affected
+          - name: multi-leaf
+            files: tests/fixtures/multi-workspace/python/packages/api/src/__init__.py
+            expect_test_all: "false"
+            expect_pairs: "api:tests/fixtures/multi-workspace/python"
+            expect_count: "1"
+          # Change in python/core → python/core + python/api (transitive)
+          - name: multi-transitive
+            files: tests/fixtures/multi-workspace/python/packages/core/src/__init__.py
+            expect_test_all: "false"
+            expect_pairs: "api:tests/fixtures/multi-workspace/python core:tests/fixtures/multi-workspace/python"
+            expect_count: "2"
+          # Colliding 'api' in both workspaces → both entries appear, disambiguated
+          - name: multi-collision
+            files: tests/fixtures/multi-workspace/python/packages/api/src/__init__.py tests/fixtures/multi-workspace/python2/packages/api/src/__init__.py
+            expect_test_all: "false"
+            expect_pairs: "api:tests/fixtures/multi-workspace/python api:tests/fixtures/multi-workspace/python2"
+            expect_count: "2"
+          # Sub-workspace uv.lock change → workspace-scoped, NOT global test_all
+          - name: multi-sub-workspace-lock
+            files: tests/fixtures/multi-workspace/python/uv.lock
+            expect_test_all: "false"
+            expect_pairs: "api:tests/fixtures/multi-workspace/python core:tests/fixtures/multi-workspace/python"
+            expect_count: "2"
+    name: test-action (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test commit
+        run: |
+          git config user.name "test"
+          git config user.email "test@test.com"
+          for f in ${{ matrix.files }}; do
+            echo "# test change" >> "$f"
+          done
+          git add -A
+          git commit -m "test: change for ${{ matrix.name }}"
+
+      - uses: ./
+        id: diff
+        with:
+          lock-file: |
+            tests/fixtures/multi-workspace/python/uv.lock
+            tests/fixtures/multi-workspace/python2/uv.lock
+          base: HEAD~1
+          verbose: "true"
+
+      - name: Validate multi-lock outputs
+        run: |
+          set -euo pipefail
+
+          echo "== Outputs =="
+          echo "affected:     $AFFECTED"
+          echo "test_all:     $TEST_ALL"
+          echo "matrix:       $MATRIX"
+          echo ""
+
+          # Multi-lock matrix must use the include form
+          echo "$MATRIX" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert 'include' in d, f'expected include form, got {d!r}'
+          assert isinstance(d['include'], list), f'include must be a list'
+          for entry in d['include']:
+              assert 'package' in entry and 'workspace' in entry, f'malformed entry: {entry!r}'
+          "
+
+          # Check test_all
+          if [ "$TEST_ALL" != "${{ matrix.expect_test_all }}" ]; then
+            echo "FAIL: expected test_all=${{ matrix.expect_test_all }}, got $TEST_ALL"
+            exit 1
+          fi
+
+          # Check each expected (package:workspace) pair is present
+          for pair in ${{ matrix.expect_pairs }}; do
+            pkg="${pair%%:*}"
+            ws="${pair#*:}"
+            if ! echo "$MATRIX" | PKG="$pkg" WS="$ws" python3 -c "
+          import sys, json, os
+          d = json.load(sys.stdin)
+          want = {'package': os.environ['PKG'], 'workspace': os.environ['WS']}
+          assert want in d['include'], f'missing {want} in {d[\"include\"]}'
+          "; then
+              echo "FAIL: expected pair $pair not in matrix"
+              exit 1
+            fi
+          done
+
+          # Check count
+          actual=$(echo "$MATRIX" | python3 -c "import sys, json; print(len(json.load(sys.stdin)['include']))")
+          if [ "$actual" != "${{ matrix.expect_count }}" ]; then
+            echo "FAIL: expected $actual entries, got ${{ matrix.expect_count }}"
+            exit 1
+          fi
+
+          echo "PASS: ${{ matrix.name }}"
+        env:
+          AFFECTED: ${{ steps.diff.outputs.affected }}
+          TEST_ALL: ${{ steps.diff.outputs.test_all }}
+          MATRIX: ${{ steps.diff.outputs.matrix }}
+
+  # End-to-end: the README example. Detect job outputs the matrix, consume job
+  # uses strategy.matrix: ${{ fromJson(...) }} to fan out per (package, workspace)
+  # and confirms both fields are populated downstream.
+  test-action-multi-downstream-detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.diff.outputs.matrix }}
+      has_affected: ${{ steps.diff.outputs.has_affected }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Create test commit
+        run: |
+          git config user.name "test"
+          git config user.email "test@test.com"
+          echo "# downstream test" >> tests/fixtures/multi-workspace/python/packages/core/src/__init__.py
+          echo "# downstream test" >> tests/fixtures/multi-workspace/python2/packages/worker/src/__init__.py
+          git add -A
+          git commit -m "test: downstream e2e"
+
+      - uses: ./
+        id: diff
+        with:
+          lock-file: |
+            tests/fixtures/multi-workspace/python/uv.lock
+            tests/fixtures/multi-workspace/python2/uv.lock
+          base: HEAD~1
+
+  test-action-multi-downstream-consume:
+    needs: test-action-multi-downstream-detect
+    if: needs.test-action-multi-downstream-detect.outputs.has_affected == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.test-action-multi-downstream-detect.outputs.matrix) }}
+    name: test-action (downstream ${{ matrix.workspace }}/${{ matrix.package }})
+    steps:
+      - name: Assert matrix fields propagate
+        run: |
+          set -euo pipefail
+          if [ -z "${{ matrix.package }}" ]; then
+            echo "FAIL: matrix.package empty"
+            exit 1
+          fi
+          if [ -z "${{ matrix.workspace }}" ]; then
+            echo "FAIL: matrix.workspace empty"
+            exit 1
+          fi
+          echo "Consumed: workspace=${{ matrix.workspace }} package=${{ matrix.package }}"
