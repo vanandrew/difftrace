@@ -997,6 +997,237 @@ class TestMultiLockRun:
         fm = result["file_mapping"]
         assert all(v != "python/myproject" for v in fm.values())
 
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_root_workspace_plus_nested(self, mock_run, tmp_path):
+        """A workspace at the git root plus a nested workspace routes correctly.
+
+        Exercises the `rel == ""` branch of route_files_to_workspaces in a
+        multi-lock setting — the asymmetric layout that arises when a
+        previously-single-lock repo splits out a sub-project into its own
+        workspace (e.g. a Python 2 compat package).
+        """
+        # Root-level workspace (at tmp_path)
+        (tmp_path / "uv.lock").write_text(SIMPLE_LOCK)
+        # Nested workspace at tmp_path/legacy/
+        legacy_dir = tmp_path / "legacy"
+        legacy_dir.mkdir()
+        (legacy_dir / "uv.lock").write_text(
+            'version = 1\n\n[manifest]\nmembers = ["old"]\n\n'
+            "[[package]]\n"
+            'name = "old"\nversion = "0.1.0"\n'
+            'source = { editable = "packages/old" }\ndependencies = []\n'
+        )
+
+        mock_run.side_effect = [
+            self._git_root_result(tmp_path),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("packages/api/main.py\nlegacy/packages/old/core.py\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tmp_path / "uv.lock"),
+                "--lock-file",
+                str(legacy_dir / "uv.lock"),
+            ]
+        )
+        result = run(args)
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert ("", "api") in affected  # root-level workspace has empty label
+        assert ("legacy", "old") in affected
+        # legacy/old change shouldn't leak into root workspace
+        assert ("", "old") not in affected
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_custom_root_trigger_scope(self, mock_run, two_workspace_tree):
+        """Custom root trigger at git root fires global test_all; the same
+        pattern inside a sub-workspace only scopes to that workspace."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result(
+                # Dockerfile at git root — should set global test_all
+                # python2/Dockerfile — should only scope to python2
+                "Dockerfile\npython2/Dockerfile\n"
+            ),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--root-trigger",
+                "Dockerfile",
+            ]
+        )
+        result = run(args)
+        # Global Dockerfile change → global test_all
+        assert result["test_all"] is True
+        # And both workspaces' packages appear
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert affected == {
+            ("python", "api"),
+            ("python", "shared"),
+            ("python2", "api"),
+            ("python2", "worker"),
+        }
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_sub_workspace_custom_trigger_scoped(
+        self, mock_run, two_workspace_tree
+    ):
+        """Sibling test to the above: a custom trigger ONLY inside one
+        sub-workspace scopes to that workspace."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("python2/Dockerfile\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--root-trigger",
+                "Dockerfile",
+            ]
+        )
+        result = run(args)
+        # No git-root trigger fired
+        assert result["test_all"] is False
+        # Only python2 packages are affected
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert affected == {("python2", "api"), ("python2", "worker")}
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_order_independent(self, mock_run, two_workspace_tree):
+        """Swapping --lock-file order yields the same affected set."""
+        tree = two_workspace_tree
+
+        def setup_mocks():
+            mock_run.side_effect = [
+                self._git_root_result(tree["root"]),
+                _sha_result("aaa"),
+                _sha_result("bbb"),
+                self._diff_result(
+                    "python/packages/shared/lib.py\npython2/packages/worker/main.py\n"
+                ),
+            ]
+
+        parser = build_parser()
+
+        setup_mocks()
+        args_a = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+            ]
+        )
+        result_a = run(args_a)
+
+        setup_mocks()
+        args_b = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--lock-file",
+                str(tree["py_lock"]),
+            ]
+        )
+        result_b = run(args_b)
+
+        assert result_a["affected"] == result_b["affected"]
+        assert result_a["directly_changed"] == result_b["directly_changed"]
+        assert result_a["test_all"] == result_b["test_all"]
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_three_lock_files(self, mock_run, tmp_path):
+        """Routing and BFS union across three sibling workspaces."""
+        for name in ("a", "b", "c"):
+            d = tmp_path / name
+            d.mkdir()
+            (d / "uv.lock").write_text(
+                "version = 1\n\n"
+                f'[manifest]\nmembers = ["pkg_{name}"]\n\n'
+                "[[package]]\n"
+                f'name = "pkg_{name}"\nversion = "0.1.0"\n'
+                'source = { editable = "packages/core" }\ndependencies = []\n'
+            )
+
+        mock_run.side_effect = [
+            self._git_root_result(tmp_path),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result(
+                "a/packages/core/x.py\nb/packages/core/y.py\nc/packages/core/z.py\n"
+            ),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tmp_path / "a" / "uv.lock"),
+                "--lock-file",
+                str(tmp_path / "b" / "uv.lock"),
+                "--lock-file",
+                str(tmp_path / "c" / "uv.lock"),
+            ]
+        )
+        result = run(args)
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert affected == {("a", "pkg_a"), ("b", "pkg_b"), ("c", "pkg_c")}
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_no_dev_no_optional(self, mock_run, tmp_path):
+        """--no-dev and --no-optional apply per workspace in multi-lock."""
+        from .conftest import OPTIONAL_DEV_LOCK
+
+        # Both workspaces use a lock with optional + dev deps.
+        a = tmp_path / "a"
+        a.mkdir()
+        (a / "uv.lock").write_text(OPTIONAL_DEV_LOCK)
+        b = tmp_path / "b"
+        b.mkdir()
+        (b / "uv.lock").write_text(OPTIONAL_DEV_LOCK)
+
+        mock_run.side_effect = [
+            self._git_root_result(tmp_path),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            # Change worker in each workspace. In OPTIONAL_DEV_LOCK, api
+            # depends on worker via optional/dev groups. With --no-dev and
+            # --no-optional, api should NOT be pulled in transitively.
+            self._diff_result("a/packages/worker/x.py\nb/packages/worker/y.py\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(a / "uv.lock"),
+                "--lock-file",
+                str(b / "uv.lock"),
+                "--no-dev",
+                "--no-optional",
+            ]
+        )
+        result = run(args)
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        # Only worker in each workspace — api isn't pulled in because the
+        # optional/dev edges were excluded from the graph.
+        assert affected == {("a", "worker"), ("b", "worker")}
+
 
 class TestMultiLockMain:
     """Multi-lock output formatting in main()."""
