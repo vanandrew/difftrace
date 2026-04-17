@@ -5,7 +5,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from difftrace.graph import WorkspacePackage
+from difftrace.graph import Workspace, WorkspacePackage
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,71 @@ def relativize_to_workspace(
         elif f == prefix:
             result.append(".")
     return result
+
+
+def route_files_to_workspaces(
+    changed_files: list[str],
+    git_root: Path,
+    workspaces: list[Workspace],
+) -> tuple[list[list[str]], list[str]]:
+    """Route git-root-relative files to the workspace whose root is the
+    longest matching prefix.
+
+    Returns:
+        A pair ``(per_workspace_files, root_level_files)``:
+          - ``per_workspace_files[i]`` holds the files routed to
+            ``workspaces[i]``, relativized to that workspace's root.
+          - ``root_level_files`` holds any file that matched no workspace
+            root (still git-root-relative).
+    """
+    git_root = git_root.resolve()
+
+    rels: list[str] = []
+    for ws in workspaces:
+        ws_root = ws.workspace_root.resolve()
+        if ws_root == git_root:
+            rels.append("")
+            continue
+        try:
+            rels.append(str(ws_root.relative_to(git_root)))
+        except ValueError:
+            rels.append("\x00")  # sentinel — never matches
+
+    order = sorted(
+        range(len(workspaces)),
+        key=lambda i: len(rels[i]),
+        reverse=True,
+    )
+
+    per_workspace: list[list[str]] = [[] for _ in workspaces]
+    leftover: list[str] = []
+
+    for filepath in changed_files:
+        matched_idx: int | None = None
+        rel_file: str = ""
+        for i in order:
+            rel = rels[i]
+            if rel == "\x00":
+                continue
+            if rel == "":
+                matched_idx = i
+                rel_file = filepath
+                break
+            if filepath == rel:
+                matched_idx = i
+                rel_file = "."
+                break
+            prefix = rel + "/"
+            if filepath.startswith(prefix):
+                matched_idx = i
+                rel_file = filepath[len(prefix):]
+                break
+        if matched_idx is None:
+            leftover.append(filepath)
+        else:
+            per_workspace[matched_idx].append(rel_file)
+
+    return per_workspace, leftover
 
 
 def map_files_to_packages(

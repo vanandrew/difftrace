@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -35,12 +36,19 @@ class TestBuildParser:
     def test_default_lock_file(self):
         parser = build_parser()
         args = parser.parse_args([])
-        assert args.lock_file == "uv.lock"
+        assert args.lock_file is None
 
     def test_custom_lock_file(self):
         parser = build_parser()
         args = parser.parse_args(["--lock-file", "custom.lock"])
-        assert args.lock_file == "custom.lock"
+        assert args.lock_file == ["custom.lock"]
+
+    def test_multiple_lock_files(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--lock-file", "python/uv.lock", "--lock-file", "python2/uv.lock"]
+        )
+        assert args.lock_file == ["python/uv.lock", "python2/uv.lock"]
 
     def test_root_trigger_append(self):
         parser = build_parser()
@@ -654,6 +662,292 @@ class TestExcludeCli:
         )
         result = run(args)
         assert "api" in result["affected"]
+
+
+class TestMultiLockRun:
+    """Multi-lock orchestration: two sibling sub-workspaces."""
+
+    def _git_root_result(self, path):
+        return type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": str(path) + "\n", "stderr": ""},
+        )()
+
+    def _diff_result(self, files: str):
+        return type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": files, "stderr": ""},
+        )()
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_routes_files(self, mock_run, two_workspace_tree):
+        """A change in python/ only affects the python workspace."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("python/packages/shared/lib.py\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+            ]
+        )
+        result = run(args)
+        assert result["_is_multi"] is True
+        assert result["test_all"] is False
+        # directly_changed contains only python/shared (not python2/*)
+        assert result["directly_changed"] == [
+            {"name": "shared", "workspace": "python"}
+        ]
+        # affected includes python/shared and python/api (transitive)
+        assert result["affected"] == [
+            {"name": "api", "workspace": "python"},
+            {"name": "shared", "workspace": "python"},
+        ]
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_name_collision(self, mock_run, two_workspace_tree):
+        """'api' exists in both workspaces; qualified output disambiguates."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result(
+                "python/packages/api/x.py\npython2/packages/api/y.py\n"
+            ),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+            ]
+        )
+        result = run(args)
+        assert result["directly_changed"] == [
+            {"name": "api", "workspace": "python"},
+            {"name": "api", "workspace": "python2"},
+        ]
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_global_test_all_from_root_file(
+        self, mock_run, two_workspace_tree
+    ):
+        """A change to a git-root-level pyproject.toml sets global test_all."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("pyproject.toml\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+            ]
+        )
+        result = run(args)
+        assert result["test_all"] is True
+        # Every package across both workspaces appears
+        names = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert names == {
+            ("python", "api"),
+            ("python", "shared"),
+            ("python2", "api"),
+            ("python2", "worker"),
+        }
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_sub_workspace_lock_change_scopes_to_workspace(
+        self, mock_run, two_workspace_tree
+    ):
+        """A change to python/uv.lock marks all python members directly_changed
+        but leaves global test_all=False and python2 untouched."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("python/uv.lock\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+            ]
+        )
+        result = run(args)
+        assert result["test_all"] is False
+        directly = {(e["workspace"], e["name"]) for e in result["directly_changed"]}
+        assert directly == {("python", "api"), ("python", "shared")}
+        # python2 packages untouched
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert ("python2", "api") not in affected
+        assert ("python2", "worker") not in affected
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_test_all_flag(self, mock_run, two_workspace_tree):
+        """--test-all skips git diff and returns all packages across all workspaces."""
+        tree = two_workspace_tree
+        # test_all=True still needs git_root for multi-lock labels.
+        mock_run.side_effect = [self._git_root_result(tree["root"])]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--test-all",
+            ]
+        )
+        result = run(args)
+        assert result["test_all"] is True
+        names = {(e["workspace"], e["name"]) for e in result["affected"]}
+        assert names == {
+            ("python", "api"),
+            ("python", "shared"),
+            ("python2", "api"),
+            ("python2", "worker"),
+        }
+
+
+class TestMultiLockMain:
+    """Multi-lock output formatting in main()."""
+
+    @patch("difftrace.cli.run")
+    def test_json_output_multi(self, mock_run, capsys):
+        mock_run.return_value = {
+            "directly_changed": [{"name": "api", "workspace": "python"}],
+            "affected": [
+                {"name": "api", "workspace": "python"},
+                {"name": "shared", "workspace": "python"},
+            ],
+            "test_all": False,
+            "workspaces": ["python", "python2"],
+            "changed_files": [],
+            "file_mapping": {},
+            "_workspaces": [],
+            "_ws_labels": ["python", "python2"],
+            "_is_multi": True,
+        }
+        with patch("sys.argv", ["difftrace", "--json"]):
+            main()
+        data = json.loads(capsys.readouterr().out)
+        assert data["affected"] == [
+            {"name": "api", "workspace": "python"},
+            {"name": "shared", "workspace": "python"},
+        ]
+        assert data["workspaces"] == ["python", "python2"]
+        assert "_is_multi" not in data
+
+    @patch("difftrace.cli.run")
+    def test_names_output_multi(self, mock_run, capsys):
+        mock_run.return_value = {
+            "directly_changed": [],
+            "affected": [
+                {"name": "api", "workspace": "python"},
+                {"name": "api", "workspace": "python2"},
+            ],
+            "test_all": False,
+            "workspaces": ["python", "python2"],
+            "changed_files": [],
+            "file_mapping": {},
+            "_workspaces": [],
+            "_ws_labels": ["python", "python2"],
+            "_is_multi": True,
+        }
+        with patch("sys.argv", ["difftrace", "--names"]):
+            main()
+        out = capsys.readouterr().out
+        assert out.strip().splitlines() == ["python/api", "python2/api"]
+
+    @patch("difftrace.cli.run")
+    def test_paths_output_multi(self, mock_run, capsys):
+        from difftrace.graph import DependencyGraph, Workspace, WorkspacePackage
+
+        py_ws = Workspace(
+            lock_path=Path("/r/python/uv.lock"),
+            workspace_root=Path("/r/python"),
+            graph=DependencyGraph(
+                packages={
+                    "api": WorkspacePackage(name="api", source_path="packages/api"),
+                }
+            ),
+        )
+        py2_ws = Workspace(
+            lock_path=Path("/r/python2/uv.lock"),
+            workspace_root=Path("/r/python2"),
+            graph=DependencyGraph(
+                packages={
+                    "api": WorkspacePackage(name="api", source_path="packages/api"),
+                }
+            ),
+        )
+        mock_run.return_value = {
+            "directly_changed": [],
+            "affected": [
+                {"name": "api", "workspace": "python"},
+                {"name": "api", "workspace": "python2"},
+            ],
+            "test_all": False,
+            "workspaces": ["python", "python2"],
+            "changed_files": [],
+            "file_mapping": {},
+            "_workspaces": [py_ws, py2_ws],
+            "_ws_labels": ["python", "python2"],
+            "_is_multi": True,
+        }
+        with patch("sys.argv", ["difftrace", "--paths"]):
+            main()
+        out = capsys.readouterr().out
+        assert out.strip().splitlines() == [
+            "python/packages/api",
+            "python2/packages/api",
+        ]
+
+    @patch("difftrace.cli.run")
+    def test_human_output_multi(self, mock_run, capsys):
+        mock_run.return_value = {
+            "directly_changed": [{"name": "shared", "workspace": "python"}],
+            "affected": [
+                {"name": "api", "workspace": "python"},
+                {"name": "shared", "workspace": "python"},
+                {"name": "worker", "workspace": "python2"},
+            ],
+            "test_all": False,
+            "workspaces": ["python", "python2"],
+            "changed_files": [],
+            "file_mapping": {},
+            "_workspaces": [],
+            "_ws_labels": ["python", "python2"],
+            "_is_multi": True,
+        }
+        with patch("sys.argv", ["difftrace"]):
+            main()
+        out = capsys.readouterr().out
+        assert "Affected packages (3)" in out
+        assert "python/shared (direct)" in out
+        assert "python/api (transitive)" in out
+        assert "python2/worker (transitive)" in out
 
 
 class TestPrintHuman:

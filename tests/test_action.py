@@ -10,17 +10,29 @@ import sys
 
 import pytest
 
-# The Python one-liners from action.yml, extracted for testing.
+# The Python scripts from action.yml, extracted for testing.
 # These mirror the exact logic in the "Run difftrace" composite step.
-EXTRACT_AFFECTED = (
-    "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))"
-)
+EXTRACT_AFFECTED = """
+import sys, json
+data = json.load(sys.stdin)
+aff = data['affected']
+if aff and isinstance(aff[0], dict):
+    print(json.dumps([(e['workspace'] + '/' + e['name']) if e['workspace'] else e['name'] for e in aff]))
+else:
+    print(json.dumps(aff))
+"""
 EXTRACT_TEST_ALL = (
     "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())"
 )
-EXTRACT_MATRIX = (
-    "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))"
-)
+EXTRACT_MATRIX = """
+import sys, json
+data = json.load(sys.stdin)
+aff = data['affected']
+if aff and isinstance(aff[0], dict):
+    print(json.dumps({'include': [{'package': e['name'], 'workspace': e['workspace']} for e in aff]}))
+else:
+    print(json.dumps({'package': aff}))
+"""
 
 
 def _run_python_oneliner(code: str, stdin_data: str) -> str:
@@ -182,3 +194,63 @@ class TestActionFullFlow:
         # GitHub Actions expects {"package": [...]} shape
         assert "package" in matrix
         assert isinstance(matrix["package"], list)
+
+
+class TestActionMultiLockOutput:
+    """Multi-lock output: qualified affected entries and include-form matrix."""
+
+    def _derive(self, difftrace_json: str) -> dict[str, str]:
+        affected = _run_python_oneliner(EXTRACT_AFFECTED, difftrace_json)
+        matrix = _run_python_oneliner(EXTRACT_MATRIX, difftrace_json)
+        test_all = _run_python_oneliner(EXTRACT_TEST_ALL, difftrace_json)
+        return {"affected": affected, "matrix": matrix, "test_all": test_all}
+
+    def test_affected_qualified(self):
+        result_json = json.dumps(
+            {
+                "directly_changed": [{"name": "api", "workspace": "python"}],
+                "affected": [
+                    {"name": "api", "workspace": "python"},
+                    {"name": "worker", "workspace": "python2"},
+                ],
+                "test_all": False,
+                "workspaces": ["python", "python2"],
+            }
+        )
+        outputs = self._derive(result_json)
+        assert json.loads(outputs["affected"]) == ["python/api", "python2/worker"]
+
+    def test_matrix_include_form(self):
+        result_json = json.dumps(
+            {
+                "directly_changed": [],
+                "affected": [
+                    {"name": "api", "workspace": "python"},
+                    {"name": "api", "workspace": "python2"},
+                ],
+                "test_all": False,
+                "workspaces": ["python", "python2"],
+            }
+        )
+        outputs = self._derive(result_json)
+        matrix = json.loads(outputs["matrix"])
+        assert matrix == {
+            "include": [
+                {"package": "api", "workspace": "python"},
+                {"package": "api", "workspace": "python2"},
+            ]
+        }
+
+    def test_empty_multi_lock_keeps_flat_shape(self):
+        """Empty affected defaults to flat shape (no dicts to detect)."""
+        result_json = json.dumps(
+            {
+                "directly_changed": [],
+                "affected": [],
+                "test_all": False,
+                "workspaces": ["python", "python2"],
+            }
+        )
+        outputs = self._derive(result_json)
+        assert json.loads(outputs["matrix"]) == {"package": []}
+        assert json.loads(outputs["affected"]) == []
