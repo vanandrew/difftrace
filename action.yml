@@ -7,7 +7,7 @@ inputs:
     required: false
     default: ""
   lock-file:
-    description: "Path to uv.lock file"
+    description: "Path(s) to uv.lock file(s). Use newline- or comma-separated values for multi-workspace monorepos."
     required: false
     default: "uv.lock"
   exclude-packages:
@@ -44,7 +44,7 @@ outputs:
     description: "JSON array of affected package names"
     value: ${{ steps.difftrace.outputs.affected }}
   matrix:
-    description: 'JSON object for strategy.matrix (e.g. {"package": [...]})'
+    description: 'JSON object for strategy.matrix. Single-lock: {"package": [...]}. Multi-lock: {"include": [{"package","workspace"}, ...]}.'
     value: ${{ steps.difftrace.outputs.matrix }}
   has_affected:
     description: '"true" if any packages are affected, "false" otherwise'
@@ -115,11 +115,19 @@ runs:
         echo "verbose:          ${{ inputs.verbose }}"
         echo ""
 
-        if [ ! -f "${{ inputs.lock-file }}" ]; then
-          echo "::error::Lock file not found: ${{ inputs.lock-file }}"
+        # Normalize newline- or comma-separated list → one lock file per line.
+        LOCK_FILES=$(printf '%s' "${{ inputs.lock-file }}" | tr ',\n' '\n\n' | sed '/^\s*$/d' | awk '{$1=$1};1')
+        if [ -z "$LOCK_FILES" ]; then
+          echo "::error::No lock file provided"
           exit 1
         fi
-        echo "Lock file OK:      $(realpath "${{ inputs.lock-file }}")"
+        while IFS= read -r lf; do
+          if [ ! -f "$lf" ]; then
+            echo "::error::Lock file not found: $lf"
+            exit 1
+          fi
+          echo "Lock file OK:      $(realpath "$lf")"
+        done <<< "$LOCK_FILES"
 
         if ! git rev-parse --verify "${{ steps.resolve-base.outputs.base }}" >/dev/null 2>&1; then
           echo "::warning::Base ref '${{ steps.resolve-base.outputs.base }}' cannot be resolved — difftrace may fail. Try 'git fetch' or checkout with fetch-depth: 0."
@@ -141,6 +149,12 @@ runs:
         set -euo pipefail
 
         echo "::group::Build difftrace flags"
+        LOCK_FILES=$(printf '%s' "${{ inputs.lock-file }}" | tr ',\n' '\n\n' | sed '/^\s*$/d' | awk '{$1=$1};1')
+        LOCK_ARGS=()
+        while IFS= read -r lf; do
+          LOCK_ARGS+=(--lock-file "$lf")
+        done <<< "$LOCK_FILES"
+
         FLAGS=""
         if [ -n "${{ inputs.exclude-packages }}" ]; then
           IFS=',' read -ra PKGS <<< "${{ inputs.exclude-packages }}"
@@ -175,20 +189,35 @@ runs:
         if [ "${{ inputs.verbose }}" = "true" ]; then
           FLAGS="$FLAGS --verbose"
         fi
-        CMD="uv run difftrace --base \"${{ steps.resolve-base.outputs.base }}\" --lock-file \"${{ inputs.lock-file }}\" $FLAGS --json"
-        echo "Command: $CMD"
+        echo "Command: uv run difftrace --base \"${{ steps.resolve-base.outputs.base }}\" ${LOCK_ARGS[*]} $FLAGS --json"
         echo "::endgroup::"
 
         echo "::group::Run difftrace"
-        result=$(uv run difftrace --base "${{ steps.resolve-base.outputs.base }}" --lock-file "${{ inputs.lock-file }}" $FLAGS --json)
+        result=$(uv run difftrace --base "${{ steps.resolve-base.outputs.base }}" "${LOCK_ARGS[@]}" $FLAGS --json)
         echo "Raw result:"
         echo "$result" | uv run python3 -m json.tool || echo "$result"
         echo "::endgroup::"
 
         echo "::group::Compute outputs"
-        affected=$(echo "$result" | uv run python3 -c "import sys, json; print(json.dumps(json.load(sys.stdin)['affected']))")
+        affected=$(echo "$result" | uv run python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        aff = data['affected']
+        if aff and isinstance(aff[0], dict):
+            print(json.dumps([(e['workspace'] + '/' + e['name']) if e['workspace'] else e['name'] for e in aff]))
+        else:
+            print(json.dumps(aff))
+        ")
         test_all=$(echo "$result" | uv run python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
-        matrix=$(echo "$result" | uv run python3 -c "import sys, json; print(json.dumps({'package': json.load(sys.stdin)['affected']}))")
+        matrix=$(echo "$result" | uv run python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        aff = data['affected']
+        if aff and isinstance(aff[0], dict):
+            print(json.dumps({'include': [{'package': e['name'], 'workspace': e['workspace']} for e in aff]}))
+        else:
+            print(json.dumps({'package': aff}))
+        ")
         count=$(echo "$result" | uv run python3 -c "import sys, json; print(len(json.load(sys.stdin)['affected']))")
 
         if [ "$affected" = "[]" ]; then
@@ -209,13 +238,14 @@ runs:
         echo "test_all=$test_all" >> "$GITHUB_OUTPUT"
         echo "::endgroup::"
 
+        LOCK_FILES_SUMMARY=$(printf '%s' "$LOCK_FILES" | tr '\n' ' ')
         {
           echo "### difftrace"
           echo ""
           echo "| output | value |"
           echo "| --- | --- |"
           echo "| base | \`${{ steps.resolve-base.outputs.base }}\` |"
-          echo "| lock-file | \`${{ inputs.lock-file }}\` |"
+          echo "| lock-files | \`$LOCK_FILES_SUMMARY\` |"
           echo "| has_affected | \`$has_affected\` |"
           echo "| test_all | \`$test_all\` |"
           echo "| affected count | \`$count\` |"

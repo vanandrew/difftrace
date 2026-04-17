@@ -14,12 +14,23 @@ from difftrace.diff import (
     get_changed_files,
     get_git_root,
     map_files_to_packages,
-    relativize_to_workspace,
+    route_files_to_workspaces,
 )
-from difftrace.graph import parse_lock_file
+from difftrace.graph import Workspace, load_workspaces
 from difftrace.traverse import find_affected_packages
 
 logger = logging.getLogger(__name__)
+
+# Keys that should not appear in JSON output.
+_INTERNAL_KEYS = {
+    "packages",
+    "changed_files",
+    "file_mapping",
+    "_workspaces",
+    "_ws_labels",
+    "_is_multi",
+    "_root_level_files",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,8 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lock-file",
-        default="uv.lock",
-        help="Path to uv.lock file (default: uv.lock)",
+        action="append",
+        default=None,
+        help=(
+            "Path to a uv.lock file (default: uv.lock). "
+            "Repeat for multi-workspace monorepos."
+        ),
     )
     parser.add_argument(
         "--no-dev",
@@ -124,82 +139,192 @@ def _parse_triggers(
     return root_triggers, dir_triggers
 
 
-def run(args: argparse.Namespace) -> dict:
-    """Orchestrate the full pipeline: parse -> diff -> map -> BFS."""
-    lock_path = Path(args.lock_file).resolve()
-    workspace_root = lock_path.parent
+def _normalize_lock_arg(raw: str | list[str] | None) -> list[Path]:
+    """Normalize --lock-file into a list of Paths.
 
-    graph = parse_lock_file(
-        lock_path,
+    Accepts None (default), a single string, or a list of strings.
+    """
+    if not raw:
+        return [Path("uv.lock")]
+    if isinstance(raw, str):
+        return [Path(raw)]
+    return [Path(p) for p in raw]
+
+
+def _workspace_label(ws: Workspace, git_root: Path | None) -> str:
+    """Compute a workspace's git-root-relative label ("" for the root itself)."""
+    if git_root is None:
+        return ""
+    try:
+        rel = str(ws.workspace_root.resolve().relative_to(git_root))
+    except ValueError:
+        return str(ws.workspace_root)
+    return "" if rel == "." else rel
+
+
+def _qualify(label: str, name: str) -> str:
+    return f"{label}/{name}" if label else name
+
+
+def _source_display_path(label: str, source_path: str) -> str:
+    """Return a source_path joined with its workspace label for display."""
+    if not label:
+        return source_path
+    if source_path == ".":
+        return label
+    return f"{label}/{source_path}"
+
+
+def run(args: argparse.Namespace) -> dict:
+    """Orchestrate the full pipeline: parse -> diff -> route -> map -> BFS."""
+    lock_paths = _normalize_lock_arg(args.lock_file)
+    workspaces = load_workspaces(
+        lock_paths,
         include_dev=not args.no_dev,
         include_optional=not args.no_optional,
     )
+    is_multi = len(workspaces) > 1
 
-    # Filter out virtual root packages — they have no code/tests to run
-    virtual_roots = {
-        name for name, pkg in graph.packages.items() if pkg.source_path == "."
-    }
+    virtual_roots: list[set[str]] = [
+        {name for name, pkg in ws.graph.packages.items() if pkg.source_path == "."}
+        for ws in workspaces
+    ]
     exclude_set = set(args.exclude or [])
+
+    git_root: Path | None = None
+    changed_files: list[str] = []
+    ws_files: list[list[str]] = [[] for _ in workspaces]
+    root_level_files: list[str] = []
 
     if args.test_all:
         test_all = True
-        directly_changed: set[str] = set()
-        affected = set(graph.packages.keys()) - virtual_roots
-        workspace_files: list[str] = []
+        ws_directly: list[set[str]] = [set() for _ in workspaces]
+        ws_affected: list[set[str]] = [
+            set(ws.graph.packages.keys()) - virtual_roots[i]
+            for i, ws in enumerate(workspaces)
+        ]
     else:
-        git_root = get_git_root(cwd=workspace_root)
+        git_root = get_git_root(cwd=workspaces[0].workspace_root).resolve()
         changed_files = get_changed_files(args.base, repo_root=git_root)
-        workspace_files = relativize_to_workspace(
-            changed_files, git_root, workspace_root
+        ws_files, root_level_files = route_files_to_workspaces(
+            changed_files, git_root, workspaces
         )
 
         root_triggers, dir_triggers = _parse_triggers(args.root_trigger)
 
-        directly_changed, test_all = map_files_to_packages(
-            workspace_files,
-            graph.packages,
+        # Global test_all: any changed file at the git root that matches a root
+        # trigger. This keeps today's single-lock-at-git-root behavior intact
+        # (workspace root == git root → workspace's own pyproject.toml/uv.lock
+        # is a git-root-level trigger).
+        _, test_all = map_files_to_packages(
+            changed_files,
+            {},
             root_triggers=root_triggers,
             dir_triggers=dir_triggers,
         )
 
-        if args.direct_only:
-            affected = directly_changed - virtual_roots
-        elif test_all:
-            affected = set(graph.packages.keys()) - virtual_roots
-        else:
-            affected = (
-                find_affected_packages(directly_changed, graph.reverse) - virtual_roots
+        ws_directly = []
+        for i, ws in enumerate(workspaces):
+            directly, ws_test_all = map_files_to_packages(
+                ws_files[i],
+                ws.graph.packages,
+                root_triggers=root_triggers,
+                dir_triggers=dir_triggers,
             )
+            if ws_test_all:
+                directly = set(ws.graph.packages.keys()) - virtual_roots[i]
+                # Single-lock legacy: a workspace-relative trigger (e.g. a
+                # nested workspace's own pyproject.toml/uv.lock) also sets the
+                # global test_all flag. In multi-lock, this stays workspace-
+                # scoped so one sub-workspace's config change doesn't force a
+                # full test run across every sibling workspace.
+                if not is_multi:
+                    test_all = True
+            ws_directly.append(directly)
 
-    directly_changed -= exclude_set
-    affected -= exclude_set
+        ws_affected = []
+        for i, ws in enumerate(workspaces):
+            if args.direct_only:
+                aff = ws_directly[i] - virtual_roots[i]
+            elif test_all:
+                aff = set(ws.graph.packages.keys()) - virtual_roots[i]
+            else:
+                aff = (
+                    find_affected_packages(ws_directly[i], ws.graph.reverse)
+                    - virtual_roots[i]
+                )
+            ws_affected.append(aff)
 
-    # Build file-to-package mapping for --detailed
-    file_mapping: dict[str, str | None] = {}
-    if args.detailed:
-        sorted_packages = sorted(
-            graph.packages.values(),
-            key=lambda p: len(p.source_path),
-            reverse=True,
+    ws_directly = [d - exclude_set for d in ws_directly]
+    ws_affected = [a - exclude_set for a in ws_affected]
+
+    # Labels are needed for qualified output and --paths/--names in multi-lock.
+    if is_multi and git_root is None:
+        git_root = get_git_root(cwd=workspaces[0].workspace_root).resolve()
+    ws_labels = [_workspace_label(ws, git_root) for ws in workspaces]
+
+    if is_multi:
+        directly_out: list = sorted(
+            [
+                {"name": n, "workspace": ws_labels[i]}
+                for i, d in enumerate(ws_directly)
+                for n in d
+            ],
+            key=lambda e: (e["workspace"], e["name"]),
         )
-        for filepath in workspace_files:
-            matched = None
-            for pkg in sorted_packages:
-                if pkg.source_path == ".":
-                    continue
-                if filepath.startswith(pkg.source_path + "/"):
-                    matched = pkg.name
-                    break
-            file_mapping[filepath] = matched
+        affected_out: list = sorted(
+            [
+                {"name": n, "workspace": ws_labels[i]}
+                for i, a in enumerate(ws_affected)
+                for n in a
+            ],
+            key=lambda e: (e["workspace"], e["name"]),
+        )
+    else:
+        directly_out = sorted(ws_directly[0])
+        affected_out = sorted(ws_affected[0])
 
-    return {
-        "directly_changed": sorted(directly_changed),
-        "affected": sorted(affected),
+    file_mapping: dict[str, str | None] = {}
+    if args.detailed and not args.test_all:
+        for i, ws in enumerate(workspaces):
+            sorted_pkgs = sorted(
+                ws.graph.packages.values(),
+                key=lambda p: len(p.source_path),
+                reverse=True,
+            )
+            label = ws_labels[i]
+            for wf in ws_files[i]:
+                matched: str | None = None
+                for pkg in sorted_pkgs:
+                    if pkg.source_path == ".":
+                        continue
+                    if wf.startswith(pkg.source_path + "/"):
+                        matched = _qualify(label, pkg.name) if is_multi else pkg.name
+                        break
+                key = wf
+                if is_multi and label:
+                    key = f"{label}/{wf}" if wf != "." else label
+                file_mapping[key] = matched
+        if is_multi:
+            for f in root_level_files:
+                file_mapping[f] = None
+
+    result: dict = {
+        "directly_changed": directly_out,
+        "affected": affected_out,
         "test_all": test_all,
-        "packages": graph.packages,
-        "changed_files": workspace_files,
+        "changed_files": changed_files if is_multi else ws_files[0],
         "file_mapping": file_mapping,
+        "_workspaces": workspaces,
+        "_ws_labels": ws_labels,
+        "_is_multi": is_multi,
+        "_root_level_files": root_level_files,
     }
+    if is_multi:
+        result["workspaces"] = ws_labels
+    else:
+        result["packages"] = workspaces[0].graph.packages
+    return result
 
 
 def main() -> None:
@@ -225,28 +350,57 @@ def main() -> None:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    internal_keys = {"packages", "changed_files", "file_mapping"}
-
     if args.json_output:
-        out = {k: v for k, v in result.items() if k not in internal_keys}
+        out = {k: v for k, v in result.items() if k not in _INTERNAL_KEYS}
         if args.detailed:
             out["file_mapping"] = result["file_mapping"]
         print(json.dumps(out))
     elif args.names:
-        for name in result["affected"]:
-            print(name)
+        _print_names(result)
     elif args.paths:
-        packages = result["packages"]
-        for name in result["affected"]:
-            print(packages[name].source_path)
+        _print_paths(result)
     else:
         _print_human(result, detailed=args.detailed)
 
 
+def _print_names(result: dict) -> None:
+    is_multi = result.get("_is_multi", False)
+    for entry in result["affected"]:
+        if is_multi:
+            print(_qualify(entry["workspace"], entry["name"]))
+        else:
+            print(entry)
+
+
+def _print_paths(result: dict) -> None:
+    is_multi = result.get("_is_multi", False)
+    if is_multi:
+        workspaces: list[Workspace] = result["_workspaces"]
+        labels: list[str] = result["_ws_labels"]
+        lookup: dict[tuple[str, str], str] = {}
+        for i, ws in enumerate(workspaces):
+            label = labels[i]
+            for name, pkg in ws.graph.packages.items():
+                lookup[(label, name)] = _source_display_path(label, pkg.source_path)
+        for entry in result["affected"]:
+            print(lookup[(entry["workspace"], entry["name"])])
+    else:
+        packages = result["packages"]
+        for name in result["affected"]:
+            print(packages[name].source_path)
+
+
 def _print_human(result: dict, *, detailed: bool = False) -> None:
-    directly_changed = set(result["directly_changed"])
+    is_multi = result.get("_is_multi", False)
     affected = result["affected"]
     test_all = result["test_all"]
+
+    if is_multi:
+        directly_keys = {
+            (e["workspace"], e["name"]) for e in result["directly_changed"]
+        }
+    else:
+        directly_keys = set(result["directly_changed"])
 
     if test_all:
         print("Testing all packages")
@@ -265,6 +419,12 @@ def _print_human(result: dict, *, detailed: bool = False) -> None:
         return
 
     print(f"Affected packages ({len(affected)}):")
-    for pkg in affected:
-        marker = " (direct)" if pkg in directly_changed else " (transitive)"
-        print(f"  - {pkg}{marker}")
+    for entry in affected:
+        if is_multi:
+            qualified = _qualify(entry["workspace"], entry["name"])
+            is_direct = (entry["workspace"], entry["name"]) in directly_keys
+        else:
+            qualified = entry
+            is_direct = entry in directly_keys
+        marker = " (direct)" if is_direct else " (transitive)"
+        print(f"  - {qualified}{marker}")

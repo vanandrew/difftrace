@@ -10,8 +10,9 @@ from difftrace.diff import (
     get_git_root,
     map_files_to_packages,
     relativize_to_workspace,
+    route_files_to_workspaces,
 )
-from difftrace.graph import WorkspacePackage
+from difftrace.graph import DependencyGraph, Workspace, WorkspacePackage
 
 
 class TestGetGitRoot:
@@ -296,3 +297,89 @@ class TestMapFilesToPackages:
         )
         assert changed == {"api"}
         assert test_all is False
+
+
+class TestRouteFilesToWorkspaces:
+    def _make_ws(self, root: Path) -> Workspace:
+        return Workspace(
+            lock_path=root / "uv.lock",
+            workspace_root=root,
+            graph=DependencyGraph(),
+        )
+
+    def test_single_workspace_at_root(self, tmp_path):
+        ws = self._make_ws(tmp_path)
+        per_ws, leftover = route_files_to_workspaces(
+            ["packages/api/main.py", "README.md"], tmp_path, [ws]
+        )
+        assert per_ws == [["packages/api/main.py", "README.md"]]
+        assert leftover == []
+
+    def test_multi_workspace_routing(self, tmp_path):
+        py_ws = self._make_ws(tmp_path / "python")
+        py2_ws = self._make_ws(tmp_path / "python2")
+        per_ws, leftover = route_files_to_workspaces(
+            [
+                "python/packages/api/main.py",
+                "python2/packages/worker/main.py",
+                "pyproject.toml",
+                ".github/ci.yml",
+            ],
+            tmp_path,
+            [py_ws, py2_ws],
+        )
+        assert per_ws[0] == ["packages/api/main.py"]
+        assert per_ws[1] == ["packages/worker/main.py"]
+        assert leftover == ["pyproject.toml", ".github/ci.yml"]
+
+    def test_longest_prefix_match(self, tmp_path):
+        """A file under a deeply nested workspace should not match a shallower one."""
+        outer = self._make_ws(tmp_path)
+        inner = self._make_ws(tmp_path / "nested")
+        per_ws, leftover = route_files_to_workspaces(
+            ["nested/packages/api/main.py", "top-level.py"],
+            tmp_path,
+            [outer, inner],
+        )
+        assert per_ws[0] == ["top-level.py"]
+        assert per_ws[1] == ["packages/api/main.py"]
+        assert leftover == []
+
+    def test_file_equal_to_workspace_root(self, tmp_path):
+        ws = self._make_ws(tmp_path / "python")
+        per_ws, leftover = route_files_to_workspaces(["python"], tmp_path, [ws])
+        assert per_ws[0] == ["."]
+        assert leftover == []
+
+    def test_no_match_goes_to_leftover(self, tmp_path):
+        ws = self._make_ws(tmp_path / "python")
+        per_ws, leftover = route_files_to_workspaces(["other/file.py"], tmp_path, [ws])
+        assert per_ws[0] == []
+        assert leftover == ["other/file.py"]
+
+    def test_prefix_no_false_match(self, tmp_path):
+        """'python-extra/x' should not match workspace at 'python/'."""
+        ws = self._make_ws(tmp_path / "python")
+        per_ws, leftover = route_files_to_workspaces(
+            ["python-extra/foo.py"], tmp_path, [ws]
+        )
+        assert per_ws[0] == []
+        assert leftover == ["python-extra/foo.py"]
+
+    def test_workspace_outside_git_root_ignored(self, tmp_path):
+        """A workspace whose root isn't under the git root never matches files."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        git_root = tmp_path / "repo"
+        git_root.mkdir()
+        inside_ws = self._make_ws(git_root / "python")
+        outside_ws = self._make_ws(outside)
+
+        per_ws, leftover = route_files_to_workspaces(
+            ["python/packages/api/main.py", "stray.py"],
+            git_root,
+            [outside_ws, inside_ws],
+        )
+        assert per_ws[0] == []  # outside_ws never matches
+        assert per_ws[1] == ["packages/api/main.py"]
+        assert leftover == ["stray.py"]

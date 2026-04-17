@@ -27,6 +27,13 @@ class DependencyGraph:
     reverse: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
 
 
+@dataclass
+class Workspace:
+    lock_path: Path
+    workspace_root: Path
+    graph: DependencyGraph
+
+
 def _extract_dep_names(deps: list[dict], members: set[str]) -> list[str]:
     """Extract dependency names that are workspace members."""
     result = []
@@ -165,3 +172,36 @@ def parse_lock_file(
 
     logger.debug("Parsed %d workspace members from %s", len(graph.packages), lock_path)
     return graph
+
+
+def load_workspaces(
+    lock_paths: list[Path],
+    *,
+    include_dev: bool = True,
+    include_optional: bool = True,
+) -> list[Workspace]:
+    """Parse multiple lock files into Workspace bundles.
+
+    Paths are resolved to absolute paths. The returned list preserves input order.
+    """
+    workspaces: list[Workspace] = []
+    seen: set[Path] = set()
+    for path in lock_paths:
+        abs_path = path.resolve()
+        if abs_path in seen:
+            logger.warning("Duplicate lock file ignored: %s", abs_path)
+            continue
+        seen.add(abs_path)
+        graph = parse_lock_file(
+            abs_path,
+            include_dev=include_dev,
+            include_optional=include_optional,
+        )
+        workspaces.append(
+            Workspace(
+                lock_path=abs_path,
+                workspace_root=abs_path.parent,
+                graph=graph,
+            )
+        )
+    return workspaces

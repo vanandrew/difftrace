@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from difftrace.graph import parse_lock_file
+from difftrace.graph import Workspace, load_workspaces, parse_lock_file
 
 
 class TestParseLockFile:
@@ -165,3 +165,35 @@ class TestParseLockFile:
         with caplog.at_level(logging.WARNING, logger="difftrace.graph"):
             parse_lock_file(lock_file)
         assert "no recognized source path" in caplog.text
+
+
+class TestLoadWorkspaces:
+    def test_single_workspace(self, simple_lock):
+        workspaces = load_workspaces([simple_lock])
+        assert len(workspaces) == 1
+        ws = workspaces[0]
+        assert isinstance(ws, Workspace)
+        assert ws.lock_path == simple_lock.resolve()
+        assert ws.workspace_root == simple_lock.parent.resolve()
+        assert set(ws.graph.packages.keys()) == {"api", "shared", "worker"}
+
+    def test_multi_workspace(self, two_workspace_tree):
+        tree = two_workspace_tree
+        workspaces = load_workspaces([tree["py_lock"], tree["py2_lock"]])
+        assert len(workspaces) == 2
+        assert workspaces[0].workspace_root.name == "python"
+        assert workspaces[1].workspace_root.name == "python2"
+        assert set(workspaces[0].graph.packages.keys()) == {"api", "shared"}
+        assert set(workspaces[1].graph.packages.keys()) == {"api", "worker"}
+
+    def test_duplicate_path_ignored(self, simple_lock, caplog):
+        with caplog.at_level(logging.WARNING, logger="difftrace.graph"):
+            workspaces = load_workspaces([simple_lock, simple_lock])
+        assert len(workspaces) == 1
+        assert "Duplicate lock file" in caplog.text
+
+    def test_preserves_order(self, two_workspace_tree):
+        tree = two_workspace_tree
+        workspaces = load_workspaces([tree["py2_lock"], tree["py_lock"]])
+        assert workspaces[0].workspace_root.name == "python2"
+        assert workspaces[1].workspace_root.name == "python"

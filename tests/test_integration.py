@@ -1,7 +1,11 @@
 """End-to-end integration tests using fixture lock content."""
 
-from difftrace.diff import map_files_to_packages, relativize_to_workspace
-from difftrace.graph import parse_lock_file
+from difftrace.diff import (
+    map_files_to_packages,
+    relativize_to_workspace,
+    route_files_to_workspaces,
+)
+from difftrace.graph import load_workspaces, parse_lock_file
 from difftrace.traverse import find_affected_packages
 
 from .conftest import DIAMOND_LOCK, SIMPLE_LOCK, VIRTUAL_ROOT_LOCK
@@ -125,3 +129,47 @@ class TestFullPipeline:
 
         assert directly_changed == {"api", "shared"}
         assert affected == {"api", "shared", "worker"}
+
+
+class TestMultiWorkspacePipeline:
+    def test_two_workspaces_independent(self, two_workspace_tree):
+        """A change in python/shared propagates within python; python2 untouched."""
+        tree = two_workspace_tree
+        workspaces = load_workspaces([tree["py_lock"], tree["py2_lock"]])
+
+        git_files = ["python/packages/shared/lib.py"]
+        per_ws, leftover = route_files_to_workspaces(
+            git_files, tree["root"], workspaces
+        )
+        assert per_ws[0] == ["packages/shared/lib.py"]
+        assert per_ws[1] == []
+        assert leftover == []
+
+        # python workspace
+        py_direct, _ = map_files_to_packages(per_ws[0], workspaces[0].graph.packages)
+        py_affected = find_affected_packages(py_direct, workspaces[0].graph.reverse)
+        assert py_direct == {"shared"}
+        assert py_affected == {"shared", "api"}
+
+        # python2 workspace — no direct changes
+        py2_direct, _ = map_files_to_packages(per_ws[1], workspaces[1].graph.packages)
+        assert py2_direct == set()
+
+    def test_cross_workspace_name_collision(self, two_workspace_tree):
+        """Both workspaces have a package named 'api' — BFS stays isolated per lock."""
+        tree = two_workspace_tree
+        workspaces = load_workspaces([tree["py_lock"], tree["py2_lock"]])
+
+        # Change only in python2/packages/api
+        git_files = ["python2/packages/api/handler.py"]
+        per_ws, _ = route_files_to_workspaces(git_files, tree["root"], workspaces)
+
+        py_direct, _ = map_files_to_packages(per_ws[0], workspaces[0].graph.packages)
+        py2_direct, _ = map_files_to_packages(per_ws[1], workspaces[1].graph.packages)
+
+        assert py_direct == set()
+        assert py2_direct == {"api"}
+
+        # python's api dependents should NOT be affected by python2's api change
+        py_affected = find_affected_packages(py_direct, workspaces[0].graph.reverse)
+        assert py_affected == set()

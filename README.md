@@ -115,7 +115,7 @@ You can always override with an explicit `base`:
 | Input | Default | Description |
 |-------|---------|-------------|
 | `base` | auto-detect | Base ref to diff against (see above) |
-| `lock-file` | `uv.lock` | Path to uv lock file |
+| `lock-file` | `uv.lock` | Path(s) to uv lock file(s). Newline- or comma-separated for multi-workspace repos |
 | `exclude-packages` | — | Comma-separated list of packages to exclude |
 | `no-dev` | `false` | Exclude dev dependencies from the dependency graph |
 | `no-optional` | `false` | Exclude optional dependencies from the dependency graph |
@@ -128,10 +128,36 @@ You can always override with an explicit `base`:
 
 | Output | Description |
 |--------|-------------|
-| `affected` | JSON array of affected package names |
-| `matrix` | `{"package": [...]}` for `strategy.matrix` |
+| `affected` | JSON array of affected package names. In multi-lock mode, names are qualified as `workspace/name` |
+| `matrix` | Single-lock: `{"package": [...]}`. Multi-lock: `{"include": [{"package","workspace"}, ...]}` |
 | `has_affected` | `"true"` or `"false"` |
-| `test_all` | `"true"` if root config changed or `test-all` input is set |
+| `test_all` | `"true"` if a root trigger fires or `test-all` input is set. Single-lock: any trigger match (git-root or workspace-root). Multi-lock: only git-root triggers; sub-workspace triggers stay scoped to that workspace |
+
+### Multi-Workspace Repos
+
+If your monorepo has sub-projects with incompatible dependencies or different Python versions, each will have its own `uv.lock`. Pass them all as newline-separated paths:
+
+```yaml
+- uses: vanandrew/difftrace@v1
+  id: diff
+  with:
+    lock-file: |
+      python/uv.lock
+      python2/uv.lock
+
+- name: Test
+  strategy:
+    matrix: ${{ fromJson(steps.diff.outputs.matrix) }}
+  run: |
+    uv run --directory ${{ matrix.workspace }} pytest packages/${{ matrix.package }}
+```
+
+difftrace routes each changed file to the workspace whose root is the longest-matching prefix, then runs the BFS per-workspace and unions the results. Packages with colliding names are disambiguated by their workspace label.
+
+Trigger scope in multi-lock mode:
+
+- **Git-root triggers** (top-level `pyproject.toml`, `uv.lock`, `.github/`) fan out to every workspace via global `test_all`.
+- **Sub-workspace triggers** (e.g. `python/uv.lock`, `python2/pyproject.toml`) mark every package in *that* workspace as directly changed, but don't force a full test run across sibling workspaces.
 
 ## Installation
 
@@ -171,6 +197,9 @@ difftrace --detailed
 
 # Custom lock file path
 difftrace --lock-file path/to/uv.lock
+
+# Multiple lock files (multi-workspace monorepos)
+difftrace --lock-file python/uv.lock --lock-file python2/uv.lock
 
 # Exclude dev/optional dependencies from the graph
 difftrace --no-dev --no-optional
@@ -216,6 +245,20 @@ Affected packages (3):
 }
 ```
 
+**JSON** (multi-lock — entries qualified by workspace):
+```json
+{
+  "directly_changed": [{"name": "shared", "workspace": "python"}],
+  "affected": [
+    {"name": "api",    "workspace": "python"},
+    {"name": "shared", "workspace": "python"},
+    {"name": "worker", "workspace": "python2"}
+  ],
+  "test_all": false,
+  "workspaces": ["python", "python2"]
+}
+```
+
 **Names** (`--names`):
 ```
 api
@@ -235,7 +278,7 @@ packages/worker
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--base` | `origin/main` | Base git ref to diff against |
-| `--lock-file` | `uv.lock` | Path to uv lock file |
+| `--lock-file` | `uv.lock` | Path to uv lock file (repeatable for multi-workspace repos) |
 | `--json` | off | Output as JSON |
 | `--names` | off | Output affected package names, one per line |
 | `--paths` | off | Output affected source paths, one per line |
@@ -252,14 +295,20 @@ packages/worker
 
 ## How It Works
 
-1. **Parse** `uv.lock` to extract workspace members and their inter-package dependencies (external packages are excluded)
+1. **Parse** each `uv.lock` to extract workspace members and their inter-package dependencies (external packages are excluded)
 2. **Diff** `git diff --name-only base...HEAD` to get changed files
-3. **Map** changed files to packages via longest source-path prefix matching
-4. **Traverse** the reverse dependency graph (BFS) to find all transitively affected packages
+3. **Route** each changed file to the workspace whose root is the longest-matching prefix (single-lock: all files go to the one workspace)
+4. **Map** within each workspace: changed files to packages via longest source-path prefix matching
+5. **Traverse** the reverse dependency graph (BFS) per workspace to find all transitively affected packages, then union
 
 ### Root Triggers
 
-Certain files at the root of your workspace indicate a change that affects *all* packages. By default, changes to `pyproject.toml`, `uv.lock`, or anything under `.github/` will set `test_all: true`. You can add custom triggers with `--root-trigger`.
+Certain files indicate a config change broad enough to affect every package. By default, changes to `pyproject.toml`, `uv.lock`, or anything under `.github/` are treated as triggers. You can add custom patterns with `--root-trigger`.
+
+Scope depends on the lock count:
+
+- **Single-lock** — any trigger match (whether at git root or nested workspace root) sets `test_all: true`.
+- **Multi-lock** — only triggers at the git root set global `test_all`. A sub-workspace's own `uv.lock` / `pyproject.toml` marks that workspace's packages as directly changed but doesn't fan out to sibling workspaces.
 
 ### Edge Cases
 
