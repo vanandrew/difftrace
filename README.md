@@ -131,7 +131,7 @@ You can always override with an explicit `base`:
 | `affected` | JSON array of affected package names. In multi-lock mode, names are qualified as `workspace/name` |
 | `matrix` | Single-lock: `{"package": [...]}`. Multi-lock: `{"include": [{"package","workspace"}, ...]}` |
 | `has_affected` | `"true"` or `"false"` |
-| `test_all` | `"true"` if a git-root-level trigger changed or `test-all` input is set |
+| `test_all` | `"true"` if a root trigger fires or `test-all` input is set. Single-lock: any trigger match (git-root or workspace-root). Multi-lock: only git-root triggers; sub-workspace triggers stay scoped to that workspace |
 
 ### Multi-Workspace Repos
 
@@ -152,7 +152,12 @@ If your monorepo has sub-projects with incompatible dependencies or different Py
     uv run --directory ${{ matrix.workspace }} pytest packages/${{ matrix.package }}
 ```
 
-difftrace routes each changed file to the workspace whose root is the longest-matching prefix, then runs the BFS per-workspace and unions the results. Packages with colliding names are disambiguated by their workspace label. A change to a file at the git root (e.g., top-level `pyproject.toml` or `.github/`) still fans out to every workspace via `test_all`.
+difftrace routes each changed file to the workspace whose root is the longest-matching prefix, then runs the BFS per-workspace and unions the results. Packages with colliding names are disambiguated by their workspace label.
+
+Trigger scope in multi-lock mode:
+
+- **Git-root triggers** (top-level `pyproject.toml`, `uv.lock`, `.github/`) fan out to every workspace via global `test_all`.
+- **Sub-workspace triggers** (e.g. `python/uv.lock`, `python2/pyproject.toml`) mark every package in *that* workspace as directly changed, but don't force a full test run across sibling workspaces.
 
 ## Installation
 
@@ -298,7 +303,12 @@ packages/worker
 
 ### Root Triggers
 
-Certain files at the root of your workspace indicate a change that affects *all* packages. By default, changes to `pyproject.toml`, `uv.lock`, or anything under `.github/` will set `test_all: true`. You can add custom triggers with `--root-trigger`.
+Certain files indicate a config change broad enough to affect every package. By default, changes to `pyproject.toml`, `uv.lock`, or anything under `.github/` are treated as triggers. You can add custom patterns with `--root-trigger`.
+
+Scope depends on the lock count:
+
+- **Single-lock** — any trigger match (whether at git root or nested workspace root) sets `test_all: true`.
+- **Multi-lock** — only triggers at the git root set global `test_all`. A sub-workspace's own `uv.lock` / `pyproject.toml` marks that workspace's packages as directly changed but doesn't fan out to sibling workspaces.
 
 ### Edge Cases
 
