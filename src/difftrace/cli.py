@@ -139,7 +139,7 @@ def _parse_triggers(
     return root_triggers, dir_triggers
 
 
-def _normalize_lock_arg(raw: object) -> list[Path]:
+def _normalize_lock_arg(raw: str | list[str] | None) -> list[Path]:
     """Normalize --lock-file into a list of Paths.
 
     Accepts None (default), a single string, or a list of strings.
