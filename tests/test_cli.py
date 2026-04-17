@@ -8,8 +8,11 @@ from unittest.mock import patch
 import pytest
 
 from difftrace.cli import (
+    _normalize_lock_arg,
     _parse_triggers,
     _print_human,
+    _source_display_path,
+    _workspace_label,
     build_parser,
     main,
     run,
@@ -664,6 +667,47 @@ class TestExcludeCli:
         assert "api" in result["affected"]
 
 
+class TestSingleLockNestedTrigger:
+    """Single-lock in a nested directory: workspace-relative triggers still
+    set global test_all (legacy behavior required by GitHub Action tests)."""
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_nested_workspace_pyproject_triggers_test_all(self, mock_run, tmp_path):
+        """A change to <workspace>/pyproject.toml sets test_all=true in single-lock mode."""
+        git_root = tmp_path
+        ws_root = tmp_path / "nested"
+        ws_root.mkdir()
+        lock_file = ws_root / "uv.lock"
+        lock_file.write_text(SIMPLE_LOCK)
+
+        git_root_result = type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": str(git_root) + "\n", "stderr": ""},
+        )()
+        diff_result = type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "nested/pyproject.toml\n",
+                "stderr": "",
+            },
+        )()
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
+
+        parser = build_parser()
+        args = parser.parse_args(["--lock-file", str(lock_file)])
+        result = run(args)
+        assert result["test_all"] is True
+        assert set(result["affected"]) == {"api", "shared", "worker"}
+
+
 class TestMultiLockRun:
     """Multi-lock orchestration: two sibling sub-workspaces."""
 
@@ -704,9 +748,7 @@ class TestMultiLockRun:
         assert result["_is_multi"] is True
         assert result["test_all"] is False
         # directly_changed contains only python/shared (not python2/*)
-        assert result["directly_changed"] == [
-            {"name": "shared", "workspace": "python"}
-        ]
+        assert result["directly_changed"] == [{"name": "shared", "workspace": "python"}]
         # affected includes python/shared and python/api (transitive)
         assert result["affected"] == [
             {"name": "api", "workspace": "python"},
@@ -721,9 +763,7 @@ class TestMultiLockRun:
             self._git_root_result(tree["root"]),
             _sha_result("aaa"),
             _sha_result("bbb"),
-            self._diff_result(
-                "python/packages/api/x.py\npython2/packages/api/y.py\n"
-            ),
+            self._diff_result("python/packages/api/x.py\npython2/packages/api/y.py\n"),
         ]
         parser = build_parser()
         args = parser.parse_args(
@@ -925,6 +965,68 @@ class TestMultiLockMain:
         ]
 
     @patch("difftrace.cli.run")
+    def test_json_detailed_includes_file_mapping(self, mock_run, capsys):
+        """--json --detailed emits file_mapping alongside the normal output."""
+        mock_run.return_value = {
+            "directly_changed": ["api"],
+            "affected": ["api"],
+            "test_all": False,
+            "packages": {},
+            "changed_files": ["packages/api/main.py"],
+            "file_mapping": {"packages/api/main.py": "api"},
+            "_workspaces": [],
+            "_ws_labels": [""],
+            "_is_multi": False,
+        }
+        with patch("sys.argv", ["difftrace", "--json", "--detailed"]):
+            main()
+        data = json.loads(capsys.readouterr().out)
+        assert data["file_mapping"] == {"packages/api/main.py": "api"}
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_detailed_file_mapping(self, mock_run, two_workspace_tree):
+        """--detailed in multi-lock uses git-root-relative keys and qualified values."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            type(
+                "R",
+                (),
+                {"returncode": 0, "stdout": str(tree["root"]) + "\n", "stderr": ""},
+            )(),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            type(
+                "R",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        "python/packages/api/main.py\n"
+                        "python2/packages/worker/lib.py\n"
+                        "README.md\n"
+                    ),
+                    "stderr": "",
+                },
+            )(),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--detailed",
+            ]
+        )
+        result = run(args)
+        fm = result["file_mapping"]
+        assert fm["python/packages/api/main.py"] == "python/api"
+        assert fm["python2/packages/worker/lib.py"] == "python2/worker"
+        # Root-level file that matched no workspace is reported as unmapped
+        assert fm["README.md"] is None
+
+    @patch("difftrace.cli.run")
     def test_human_output_multi(self, mock_run, capsys):
         mock_run.return_value = {
             "directly_changed": [{"name": "shared", "workspace": "python"}],
@@ -948,6 +1050,58 @@ class TestMultiLockMain:
         assert "python/shared (direct)" in out
         assert "python/api (transitive)" in out
         assert "python2/worker (transitive)" in out
+
+
+class TestHelpers:
+    """Small helper functions exposed for multi-lock bookkeeping."""
+
+    def test_normalize_lock_arg_default(self):
+        assert _normalize_lock_arg(None) == [Path("uv.lock")]
+        assert _normalize_lock_arg([]) == [Path("uv.lock")]
+
+    def test_normalize_lock_arg_string(self):
+        assert _normalize_lock_arg("foo.lock") == [Path("foo.lock")]
+
+    def test_normalize_lock_arg_list(self):
+        assert _normalize_lock_arg(["a.lock", "b.lock"]) == [
+            Path("a.lock"),
+            Path("b.lock"),
+        ]
+
+    def test_workspace_label_no_git_root(self, tmp_path):
+        from difftrace.graph import DependencyGraph, Workspace
+
+        ws = Workspace(
+            lock_path=tmp_path / "uv.lock",
+            workspace_root=tmp_path,
+            graph=DependencyGraph(),
+        )
+        assert _workspace_label(ws, None) == ""
+
+    def test_workspace_label_outside_git_root(self, tmp_path):
+        """Workspace root not under git root falls back to the absolute path."""
+        from difftrace.graph import DependencyGraph, Workspace
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        git_root = tmp_path / "repo"
+        git_root.mkdir()
+        ws = Workspace(
+            lock_path=outside / "uv.lock",
+            workspace_root=outside,
+            graph=DependencyGraph(),
+        )
+        assert _workspace_label(ws, git_root) == str(outside)
+
+    def test_source_display_path_no_label(self):
+        assert _source_display_path("", "packages/api") == "packages/api"
+
+    def test_source_display_path_virtual_root(self):
+        """Virtual root (source_path='.') displays as just the workspace label."""
+        assert _source_display_path("python", ".") == "python"
+
+    def test_source_display_path_qualified(self):
+        assert _source_display_path("python", "packages/api") == "python/packages/api"
 
 
 class TestPrintHuman:

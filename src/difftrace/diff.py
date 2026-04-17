@@ -183,7 +183,7 @@ def route_files_to_workspaces(
             prefix = rel + "/"
             if filepath.startswith(prefix):
                 matched_idx = i
-                rel_file = filepath[len(prefix):]
+                rel_file = filepath[len(prefix) :]
                 break
         if matched_idx is None:
             leftover.append(filepath)

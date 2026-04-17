@@ -233,6 +233,13 @@ def run(args: argparse.Namespace) -> dict:
             )
             if ws_test_all:
                 directly = set(ws.graph.packages.keys()) - virtual_roots[i]
+                # Single-lock legacy: a workspace-relative trigger (e.g. a
+                # nested workspace's own pyproject.toml/uv.lock) also sets the
+                # global test_all flag. In multi-lock, this stays workspace-
+                # scoped so one sub-workspace's config change doesn't force a
+                # full test run across every sibling workspace.
+                if not is_multi:
+                    test_all = True
             ws_directly.append(directly)
 
         ws_affected = []

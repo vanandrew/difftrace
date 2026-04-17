@@ -347,17 +347,13 @@ class TestRouteFilesToWorkspaces:
 
     def test_file_equal_to_workspace_root(self, tmp_path):
         ws = self._make_ws(tmp_path / "python")
-        per_ws, leftover = route_files_to_workspaces(
-            ["python"], tmp_path, [ws]
-        )
+        per_ws, leftover = route_files_to_workspaces(["python"], tmp_path, [ws])
         assert per_ws[0] == ["."]
         assert leftover == []
 
     def test_no_match_goes_to_leftover(self, tmp_path):
         ws = self._make_ws(tmp_path / "python")
-        per_ws, leftover = route_files_to_workspaces(
-            ["other/file.py"], tmp_path, [ws]
-        )
+        per_ws, leftover = route_files_to_workspaces(["other/file.py"], tmp_path, [ws])
         assert per_ws[0] == []
         assert leftover == ["other/file.py"]
 
@@ -369,3 +365,21 @@ class TestRouteFilesToWorkspaces:
         )
         assert per_ws[0] == []
         assert leftover == ["python-extra/foo.py"]
+
+    def test_workspace_outside_git_root_ignored(self, tmp_path):
+        """A workspace whose root isn't under the git root never matches files."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        git_root = tmp_path / "repo"
+        git_root.mkdir()
+        inside_ws = self._make_ws(git_root / "python")
+        outside_ws = self._make_ws(outside)
+
+        per_ws, leftover = route_files_to_workspaces(
+            ["python/packages/api/main.py", "stray.py"],
+            git_root,
+            [outside_ws, inside_ws],
+        )
+        assert per_ws[0] == []  # outside_ws never matches
+        assert per_ws[1] == ["packages/api/main.py"]
+        assert leftover == ["stray.py"]
