@@ -869,6 +869,134 @@ class TestMultiLockRun:
             ("python2", "worker"),
         }
 
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_direct_only(self, mock_run, two_workspace_tree):
+        """--direct-only skips transitive dependents per workspace."""
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("python/packages/shared/lib.py\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--direct-only",
+            ]
+        )
+        result = run(args)
+        # shared is directly changed; api (its dependent) is NOT in affected
+        assert result["directly_changed"] == [{"name": "shared", "workspace": "python"}]
+        assert result["affected"] == [{"name": "shared", "workspace": "python"}]
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_exclude_removes_by_name_across_workspaces(
+        self, mock_run, two_workspace_tree
+    ):
+        """--exclude removes by plain name from every workspace that has it.
+
+        Both workspaces define a package named 'api'. Passing --exclude api
+        drops both — callers who want to exclude only one have to use a more
+        specific setup (e.g. rename one of the packages).
+        """
+        tree = two_workspace_tree
+        mock_run.side_effect = [
+            self._git_root_result(tree["root"]),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result("python/packages/api/x.py\npython2/packages/api/y.py\n"),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(tree["py_lock"]),
+                "--lock-file",
+                str(tree["py2_lock"]),
+                "--exclude",
+                "api",
+            ]
+        )
+        result = run(args)
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        # Both 'api's removed
+        assert ("python", "api") not in affected
+        assert ("python2", "api") not in affected
+        # Nothing else reached: python/api has no dependents; python2/api
+        # depends on worker (not the reverse), so affected is empty.
+        assert affected == set()
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_multi_lock_virtual_root(self, mock_run, tmp_path):
+        """A virtual root inside one sub-workspace is skipped in affected / mapping."""
+        # python/ workspace with a virtual root
+        py_dir = tmp_path / "python"
+        py_dir.mkdir()
+        (py_dir / "uv.lock").write_text(
+            'version = 1\n\n[manifest]\nmembers = ["myproject", "api", "lib"]\n\n'
+            "[[package]]\n"
+            'name = "myproject"\nversion = "0.1.0"\n'
+            'source = { virtual = "." }\n'
+            'dependencies = [{ name = "api" }, { name = "lib" }]\n\n'
+            "[[package]]\n"
+            'name = "api"\nversion = "0.1.0"\n'
+            'source = { directory = "packages/api" }\n'
+            'dependencies = [{ name = "lib" }]\n\n'
+            "[[package]]\n"
+            'name = "lib"\nversion = "0.1.0"\n'
+            'source = { directory = "packages/lib" }\ndependencies = []\n'
+        )
+        # python2/ workspace with no virtual root
+        py2_dir = tmp_path / "python2"
+        py2_dir.mkdir()
+        (py2_dir / "uv.lock").write_text(
+            'version = 1\n\n[manifest]\nmembers = ["worker"]\n\n'
+            "[[package]]\n"
+            'name = "worker"\nversion = "0.1.0"\n'
+            'source = { editable = "packages/worker" }\ndependencies = []\n'
+        )
+
+        mock_run.side_effect = [
+            self._git_root_result(tmp_path),
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            self._diff_result(
+                # Include an unmatched file inside the python workspace so the
+                # detailed-mapping loop iterates past every non-virtual package
+                # and reaches the virtual-root 'continue' branch.
+                "python/packages/lib/core.py\n"
+                "python/docs/notes.md\n"
+                "python2/packages/worker/main.py\n"
+            ),
+        ]
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--lock-file",
+                str(py_dir / "uv.lock"),
+                "--lock-file",
+                str(py2_dir / "uv.lock"),
+                "--detailed",
+            ]
+        )
+        result = run(args)
+        affected = {(e["workspace"], e["name"]) for e in result["affected"]}
+        # myproject is the virtual root — should NOT appear even though it
+        # depends on lib transitively.
+        assert ("python", "myproject") not in affected
+        assert ("python", "api") in affected  # transitive via lib
+        assert ("python", "lib") in affected
+        assert ("python2", "worker") in affected
+
+        # --detailed file mapping: no entry should map to 'python/myproject'.
+        fm = result["file_mapping"]
+        assert all(v != "python/myproject" for v in fm.values())
+
 
 class TestMultiLockMain:
     """Multi-lock output formatting in main()."""

@@ -254,3 +254,24 @@ class TestActionMultiLockOutput:
         outputs = self._derive(result_json)
         assert json.loads(outputs["matrix"]) == {"package": []}
         assert json.loads(outputs["affected"]) == []
+
+    def test_has_affected_false_short_circuits_empty_include(self):
+        """Consumers must gate matrix jobs on has_affected.
+
+        GitHub Actions rejects `strategy.matrix.include: []` at runtime. The
+        action's has_affected=false short-circuit is what prevents the empty
+        matrix from ever reaching a downstream job — verify it kicks in for a
+        multi-lock result where everything was excluded.
+        """
+        result_json = json.dumps(
+            {
+                "directly_changed": [],
+                "affected": [],
+                "test_all": False,
+                "workspaces": ["python", "python2"],
+            }
+        )
+        outputs = self._derive(result_json)
+        # Mirror the bash logic: if [ "$affected" = "[]" ]; then "false"
+        has_affected = "false" if outputs["affected"] == "[]" else "true"
+        assert has_affected == "false"
