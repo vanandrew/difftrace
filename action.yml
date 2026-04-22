@@ -70,9 +70,9 @@ runs:
       run: |
         echo "::group::Install difftrace"
         echo "Action path: ${{ github.action_path }}"
-        uv venv -p python3.11
-        uv pip install "${{ github.action_path }}"
-        echo "Installed version: $(uv run difftrace --version 2>/dev/null || echo 'unknown')"
+        uv tool install "${{ github.action_path }}"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        echo "Installed version: $("$HOME/.local/bin/difftrace" --version 2>/dev/null || echo 'unknown')"
         echo "::endgroup::"
 
     - name: Resolve base ref
@@ -189,36 +189,34 @@ runs:
         if [ "${{ inputs.verbose }}" = "true" ]; then
           FLAGS="$FLAGS --verbose"
         fi
-        echo "Command: uv run difftrace --base \"${{ steps.resolve-base.outputs.base }}\" ${LOCK_ARGS[*]} $FLAGS --json"
+        echo "Command: difftrace --base \"${{ steps.resolve-base.outputs.base }}\" ${LOCK_ARGS[*]} $FLAGS --json"
         echo "::endgroup::"
 
         echo "::group::Run difftrace"
-        result=$(uv run difftrace --base "${{ steps.resolve-base.outputs.base }}" "${LOCK_ARGS[@]}" $FLAGS --json)
+        result=$(difftrace --base "${{ steps.resolve-base.outputs.base }}" "${LOCK_ARGS[@]}" $FLAGS --json)
         echo "Raw result:"
-        echo "$result" | uv run python3 -m json.tool || echo "$result"
+        echo "$result" | python3 -m json.tool || echo "$result"
         echo "::endgroup::"
 
         echo "::group::Compute outputs"
-        affected=$(echo "$result" | uv run python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
+        _dt_out=$(mktemp)
+        DIFFTRACE_RESULT="$result" python3 > "$_dt_out" <<'PY'
+        import os, json
+        data = json.loads(os.environ['DIFFTRACE_RESULT'])
         aff = data['affected']
         if aff and isinstance(aff[0], dict):
-            print(json.dumps([(e['workspace'] + '/' + e['name']) if e['workspace'] else e['name'] for e in aff]))
+            affected = [(e['workspace'] + '/' + e['name']) if e['workspace'] else e['name'] for e in aff]
+            matrix = {'include': [{'package': e['name'], 'workspace': e['workspace']} for e in aff]}
         else:
-            print(json.dumps(aff))
-        ")
-        test_all=$(echo "$result" | uv run python3 -c "import sys, json; print(str(json.load(sys.stdin)['test_all']).lower())")
-        matrix=$(echo "$result" | uv run python3 -c "
-        import sys, json
-        data = json.load(sys.stdin)
-        aff = data['affected']
-        if aff and isinstance(aff[0], dict):
-            print(json.dumps({'include': [{'package': e['name'], 'workspace': e['workspace']} for e in aff]}))
-        else:
-            print(json.dumps({'package': aff}))
-        ")
-        count=$(echo "$result" | uv run python3 -c "import sys, json; print(len(json.load(sys.stdin)['affected']))")
+            affected = aff
+            matrix = {'package': aff}
+        print(json.dumps(affected))
+        print(json.dumps(matrix))
+        print(str(data['test_all']).lower())
+        print(len(aff))
+        PY
+        { read -r affected; read -r matrix; read -r test_all; read -r count; } < "$_dt_out"
+        rm -f "$_dt_out"
 
         if [ "$affected" = "[]" ]; then
           has_affected="false"
