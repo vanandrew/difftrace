@@ -11,9 +11,11 @@ from difftrace import __version__
 from difftrace.diff import (
     DEFAULT_DIR_TRIGGERS,
     DEFAULT_ROOT_TRIGGERS,
+    filter_excluded_extensions,
     get_changed_files,
     get_git_root,
     map_files_to_packages,
+    normalize_extensions,
     route_files_to_workspaces,
 )
 from difftrace.graph import Workspace, load_workspaces
@@ -117,6 +119,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exclude a package from the affected set (repeatable)",
     )
     parser.add_argument(
+        "--exclude-ext",
+        action="append",
+        metavar="EXT",
+        help=(
+            "Ignore changed files with this extension (repeatable). "
+            "Matched files do not contribute to package mapping or root "
+            "triggers. Leading dot optional, case-insensitive "
+            "(e.g. --exclude-ext .md --exclude-ext txt)."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -206,6 +219,16 @@ def run(args: argparse.Namespace) -> dict:
     else:
         git_root = get_git_root(cwd=workspaces[0].workspace_root).resolve()
         changed_files = get_changed_files(args.base, repo_root=git_root)
+        excluded_exts = normalize_extensions(args.exclude_ext)
+        if excluded_exts:
+            before = len(changed_files)
+            changed_files = filter_excluded_extensions(changed_files, excluded_exts)
+            logger.debug(
+                "Filtered %d/%d files by extension (%s)",
+                before - len(changed_files),
+                before,
+                sorted(excluded_exts),
+            )
         ws_files, root_level_files = route_files_to_workspaces(
             changed_files, git_root, workspaces
         )

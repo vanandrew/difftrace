@@ -6,9 +6,11 @@ from unittest.mock import patch
 import pytest
 
 from difftrace.diff import (
+    filter_excluded_extensions,
     get_changed_files,
     get_git_root,
     map_files_to_packages,
+    normalize_extensions,
     relativize_to_workspace,
     route_files_to_workspaces,
 )
@@ -383,3 +385,59 @@ class TestRouteFilesToWorkspaces:
         assert per_ws[0] == []  # outside_ws never matches
         assert per_ws[1] == ["packages/api/main.py"]
         assert leftover == ["stray.py"]
+
+
+class TestNormalizeExtensions:
+    def test_none(self):
+        assert normalize_extensions(None) == set()
+
+    def test_empty(self):
+        assert normalize_extensions([]) == set()
+
+    def test_adds_leading_dot(self):
+        assert normalize_extensions(["md"]) == {".md"}
+
+    def test_keeps_leading_dot(self):
+        assert normalize_extensions([".md"]) == {".md"}
+
+    def test_lowercases(self):
+        assert normalize_extensions(["MD", ".TxT"]) == {".md", ".txt"}
+
+    def test_strips_whitespace(self):
+        assert normalize_extensions(["  md  ", " .txt "]) == {".md", ".txt"}
+
+    def test_drops_empty(self):
+        assert normalize_extensions(["", "   ", "md"]) == {".md"}
+
+
+class TestFilterExcludedExtensions:
+    def test_no_excluded_returns_input(self):
+        files = ["a.py", "b.md"]
+        assert filter_excluded_extensions(files, set()) == files
+
+    def test_drops_matching(self):
+        files = ["src/main.py", "README.md", "docs/notes.md"]
+        result = filter_excluded_extensions(files, {".md"})
+        assert result == ["src/main.py"]
+
+    def test_case_insensitive(self):
+        files = ["README.MD", "notes.Md", "code.py"]
+        result = filter_excluded_extensions(files, {".md"})
+        assert result == ["code.py"]
+
+    def test_no_extension_kept(self):
+        """A file with no extension (e.g. 'Makefile') should never be filtered."""
+        files = ["Makefile", "Dockerfile", "src/main.py"]
+        result = filter_excluded_extensions(files, {".md"})
+        assert result == files
+
+    def test_only_last_suffix_matched(self):
+        """`.tar.gz` is matched as `.gz`; excluding `.tar` doesn't drop it."""
+        files = ["archive.tar.gz"]
+        assert filter_excluded_extensions(files, {".tar"}) == ["archive.tar.gz"]
+        assert filter_excluded_extensions(files, {".gz"}) == []
+
+    def test_multiple_extensions(self):
+        files = ["a.md", "b.txt", "c.py", "d.rst"]
+        result = filter_excluded_extensions(files, {".md", ".txt"})
+        assert result == ["c.py", "d.rst"]

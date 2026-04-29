@@ -65,6 +65,13 @@ class TestBuildParser:
         args = parser.parse_args(["--exclude", "api", "--exclude", "worker"])
         assert args.exclude == ["api", "worker"]
 
+    def test_exclude_ext_append(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--exclude-ext", ".md", "--exclude-ext", "txt"]
+        )
+        assert args.exclude_ext == [".md", "txt"]
+
     def test_verbose_flag(self):
         parser = build_parser()
         args = parser.parse_args(["--verbose"])
@@ -114,6 +121,7 @@ class TestBuildParser:
         assert args.verbose is False
         assert args.root_trigger is None
         assert args.exclude is None
+        assert args.exclude_ext is None
 
 
 class TestParseTriggers:
@@ -350,6 +358,98 @@ class TestRun:
         assert "api" not in result["affected"]
         assert "shared" in result["affected"]
         assert "worker" in result["affected"]
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_exclude_ext_skips_root_trigger(self, mock_run, tmp_path):
+        """A markdown change at the root should NOT trigger test_all when .md is excluded.
+
+        Without the filter, `.github/foo.md` would match the `.github/` dir
+        trigger and set test_all. With --exclude-ext .md it must be ignored
+        entirely.
+        """
+        git_root_result = type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": str(tmp_path) + "\n", "stderr": ""},
+        )()
+        diff_result = type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": ".github/notes.md\n",
+                "stderr": "",
+            },
+        )()
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
+
+        args = self._make_args(tmp_path, exclude_ext=[".md"])
+        result = run(args)
+        assert result["test_all"] is False
+        assert result["affected"] == []
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_exclude_ext_drops_package_files(self, mock_run, tmp_path):
+        """Markdown changes inside a package should not mark it changed."""
+        git_root_result = type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": str(tmp_path) + "\n", "stderr": ""},
+        )()
+        diff_result = type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "packages/api/README.md\n",
+                "stderr": "",
+            },
+        )()
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
+
+        args = self._make_args(tmp_path, exclude_ext=["md"])
+        result = run(args)
+        assert result["affected"] == []
+        assert result["directly_changed"] == []
+
+    @patch("difftrace.diff.subprocess.run")
+    def test_exclude_ext_keeps_other_changes(self, mock_run, tmp_path):
+        """Non-excluded files in the same diff still flow through normally."""
+        git_root_result = type(
+            "R",
+            (),
+            {"returncode": 0, "stdout": str(tmp_path) + "\n", "stderr": ""},
+        )()
+        diff_result = type(
+            "R",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "packages/api/README.md\npackages/api/main.py\n",
+                "stderr": "",
+            },
+        )()
+        mock_run.side_effect = [
+            git_root_result,
+            _sha_result("aaa"),
+            _sha_result("bbb"),
+            diff_result,
+        ]
+
+        args = self._make_args(tmp_path, exclude_ext=[".md"])
+        result = run(args)
+        assert "api" in result["affected"]
+        assert result["test_all"] is False
 
     def test_test_all_flag(self, tmp_path):
         """--test-all skips git diff and returns all packages."""

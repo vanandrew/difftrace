@@ -14,6 +14,10 @@ inputs:
     description: "Comma-separated list of packages to exclude from the affected set"
     required: false
     default: ""
+  exclude-extensions:
+    description: "Comma-separated list of file extensions to ignore in the diff (e.g. '.md,.txt'). Leading dot optional, case-insensitive."
+    required: false
+    default: ""
   no-dev:
     description: "Exclude dev dependencies from the dependency graph"
     required: false
@@ -104,15 +108,16 @@ runs:
       shell: bash
       run: |
         echo "::group::Validate inputs"
-        echo "base:             ${{ steps.resolve-base.outputs.base }}"
-        echo "lock-file:        ${{ inputs.lock-file }}"
-        echo "exclude-packages: ${{ inputs.exclude-packages }}"
-        echo "no-dev:           ${{ inputs.no-dev }}"
-        echo "no-optional:      ${{ inputs.no-optional }}"
-        echo "direct-only:      ${{ inputs.direct-only }}"
-        echo "test-all:         ${{ inputs.test-all }}"
-        echo "root-triggers:    ${{ inputs.root-triggers }}"
-        echo "verbose:          ${{ inputs.verbose }}"
+        echo "base:               ${{ steps.resolve-base.outputs.base }}"
+        echo "lock-file:          ${{ inputs.lock-file }}"
+        echo "exclude-packages:   ${{ inputs.exclude-packages }}"
+        echo "exclude-extensions: ${{ inputs.exclude-extensions }}"
+        echo "no-dev:             ${{ inputs.no-dev }}"
+        echo "no-optional:        ${{ inputs.no-optional }}"
+        echo "direct-only:        ${{ inputs.direct-only }}"
+        echo "test-all:           ${{ inputs.test-all }}"
+        echo "root-triggers:      ${{ inputs.root-triggers }}"
+        echo "verbose:            ${{ inputs.verbose }}"
         echo ""
 
         # Normalize newline- or comma-separated list → one lock file per line.
@@ -162,6 +167,15 @@ runs:
             pkg=$(echo "$pkg" | xargs)
             if [ -n "$pkg" ]; then
               FLAGS="$FLAGS --exclude $pkg"
+            fi
+          done
+        fi
+        if [ -n "${{ inputs.exclude-extensions }}" ]; then
+          IFS=',' read -ra EXTS <<< "${{ inputs.exclude-extensions }}"
+          for ext in "${EXTS[@]}"; do
+            ext=$(echo "$ext" | xargs)
+            if [ -n "$ext" ]; then
+              FLAGS="$FLAGS --exclude-ext $ext"
             fi
           done
         fi
