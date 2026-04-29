@@ -117,6 +117,7 @@ You can always override with an explicit `base`:
 | `base` | auto-detect | Base ref to diff against (see above) |
 | `lock-file` | `uv.lock` | Path(s) to uv lock file(s). Newline- or comma-separated for multi-workspace repos |
 | `exclude-packages` | — | Comma-separated list of packages to exclude |
+| `exclude-extensions` | — | Comma-separated list of file extensions to ignore in the diff (e.g. `.md,.txt`). Excluded files don't contribute to package mapping or root triggers |
 | `no-dev` | `false` | Exclude dev dependencies from the dependency graph |
 | `no-optional` | `false` | Exclude optional dependencies from the dependency graph |
 | `direct-only` | `false` | Only output directly changed packages, skip transitive dependents |
@@ -207,6 +208,9 @@ difftrace --no-dev --no-optional
 # Exclude specific packages from the output
 difftrace --exclude docs --exclude examples
 
+# Ignore docs-only changes (matched files don't trigger tests)
+difftrace --exclude-ext .md --exclude-ext .rst
+
 # Add custom root-level triggers
 difftrace --root-trigger Dockerfile --root-trigger "config/"
 
@@ -289,6 +293,7 @@ packages/worker
 | `--no-optional` | off | Exclude optional dependencies from the graph |
 | `--root-trigger` | — | Additional root-level trigger patterns (repeatable) |
 | `--exclude` | — | Exclude a package from the affected set (repeatable) |
+| `--exclude-ext` | — | Ignore changed files with this extension (repeatable, e.g. `.md`). Matched files don't contribute to package mapping or root triggers |
 | `-v` / `--verbose` | off | Enable debug logging |
 
 > `--json`, `--names`, and `--paths` are mutually exclusive. If none are specified, human-readable output is used.

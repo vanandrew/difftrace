@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -96,6 +97,34 @@ def get_changed_files(base_ref: str, repo_root: Path | None = None) -> list[str]
     files = [f for f in result.stdout.strip().splitlines() if f]
     logger.debug("Changed files (%d): %s", len(files), files)
     return files
+
+
+def normalize_extensions(raw: list[str] | None) -> set[str]:
+    """Normalize a list of extension strings into a lowercase, dot-prefixed set.
+
+    Accepts ``md``, ``.md``, or ``MD`` and yields ``.md``. Empty strings and
+    whitespace-only entries are dropped.
+    """
+    out: set[str] = set()
+    for ext in raw or []:
+        ext = ext.strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        out.add(ext)
+    return out
+
+
+def filter_excluded_extensions(files: list[str], excluded: set[str]) -> list[str]:
+    """Drop files whose extension matches one of the excluded extensions.
+
+    Matches the final suffix only (``foo.tar.gz`` → ``.gz``).
+    Comparison is case-insensitive.
+    """
+    if not excluded:
+        return files
+    return [f for f in files if os.path.splitext(f)[1].lower() not in excluded]
 
 
 def relativize_to_workspace(

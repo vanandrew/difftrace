@@ -300,6 +300,27 @@ jobs:
             expect_test_all: "false"
             expect_contains: "core"
             expect_not_contains: "api frontend"
+          # exclude-extensions: single — a docs-only touch on `core` (which has
+          # transitive dependents) must produce zero affected packages when
+          # `.md` is excluded. Without the filter this would fan out to
+          # core, api, frontend.
+          - name: exclude-ext-single
+            lock_file: tests/fixtures/workspace/uv.lock
+            touches: tests/fixtures/workspace/packages/core/docs.md
+            exclude_extensions: ".md"
+            expect_test_all: "false"
+            expect_contains: ""
+            expect_not_contains: "core api frontend"
+          # exclude-extensions: comma-separated multi. Mixed diff with a `.md`
+          # and a `.txt` in `core` (filtered) plus a `.py` in `frontend` (kept).
+          # Only `frontend` should appear; `core` and its dependents must not.
+          - name: exclude-ext-multi
+            lock_file: tests/fixtures/workspace/uv.lock
+            touches: "tests/fixtures/workspace/packages/core/notes.md tests/fixtures/workspace/packages/core/data.txt tests/fixtures/workspace/packages/frontend/src/__init__.py"
+            exclude_extensions: ".md, .txt"
+            expect_test_all: "false"
+            expect_contains: "frontend"
+            expect_not_contains: "core api"
           # no-dev: smoke — fixture has no dev deps, flag should pass through cleanly
           - name: no-dev
             lock_file: tests/fixtures/workspace/uv.lock
@@ -362,6 +383,7 @@ jobs:
           lock-file: ${{ matrix.lock_file }}
           base: HEAD~1
           exclude-packages: ${{ matrix.exclude_packages || '' }}
+          exclude-extensions: ${{ matrix.exclude_extensions || '' }}
           no-dev: ${{ matrix.no_dev || 'false' }}
           no-optional: ${{ matrix.no_optional || 'false' }}
           direct-only: ${{ matrix.direct_only || 'false' }}
