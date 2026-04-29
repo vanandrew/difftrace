@@ -116,9 +116,7 @@ def normalize_extensions(raw: list[str] | None) -> set[str]:
     return out
 
 
-def filter_excluded_extensions(
-    files: list[str], excluded: set[str]
-) -> list[str]:
+def filter_excluded_extensions(files: list[str], excluded: set[str]) -> list[str]:
     """Drop files whose extension matches one of the excluded extensions.
 
     Matches the final suffix only (``foo.tar.gz`` → ``.gz``).

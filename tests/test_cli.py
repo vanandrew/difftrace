@@ -67,9 +67,7 @@ class TestBuildParser:
 
     def test_exclude_ext_append(self):
         parser = build_parser()
-        args = parser.parse_args(
-            ["--exclude-ext", ".md", "--exclude-ext", "txt"]
-        )
+        args = parser.parse_args(["--exclude-ext", ".md", "--exclude-ext", "txt"])
         assert args.exclude_ext == [".md", "txt"]
 
     def test_verbose_flag(self):
